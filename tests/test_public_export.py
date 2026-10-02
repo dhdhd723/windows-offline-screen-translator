@@ -53,6 +53,8 @@ def _repository(root: Path) -> set[str]:
         "tools/example.py", "docs/PUBLISHING.md", "docs/guide.md",
         "packaging/ScreenTranslator.spec", "packaging/app.manifest",
         "packaging/version_info.txt", "packaging/icon.ico",
+        "packaging/fonts/NotoSansCJKsc-Regular.otf", "packaging/fonts/OFL.txt",
+        "packaging/fonts/README.md",
         "packaging/qt-notices/LGPL-3.0-only.txt",
         "packaging/extra-notices/example/LICENSE.txt",
         "packaging/extra-notices/example/NOTICE.txt",
@@ -95,6 +97,7 @@ def test_repository_copies_only_explicit_source_groups(exporter, tmp_path):
     "src/example/__pycache__/private.py", "src/example/private.pyc",
     "packaging/extra-notices/example/private.whl", "packaging/private.pfx",
     "docs/private.json", "tests/private.sqlite3", "tools/private.pem",
+    "packaging/fonts/private.otf", "packaging/fonts/private.ttf",
 ])
 def test_repository_excludes_private_and_generated_files(exporter, tmp_path, relative):
     source = tmp_path / "project"
@@ -118,7 +121,7 @@ def test_third_party_author_and_license_attribution_survives(exporter, tmp_path)
     assert (destination / relative).read_text(encoding="utf-8") == notice
 
 
-@pytest.mark.parametrize("name", ["LICENSE.txt", "NOTICE.txt", "COPYING", "README.md"])
+@pytest.mark.parametrize("name", ["LICENSE.txt", "NOTICE.txt", "COPYING", "README.md", "upstream.patch"])
 def test_license_text_paths_are_acceptable(exporter, name):
     assert exporter.acceptable_license_path(Path("LICENSES") / "example" / name)
 
@@ -144,6 +147,174 @@ def test_portable_preserves_runtime_models_and_executable_exactly(exporter, tmp_
         repo / "src/example/main.py").read_bytes()
 
 
+def test_portable_overlays_reviewed_source_notices(exporter, tmp_path):
+    portable = tmp_path / "portable"
+    _portable(portable)
+    _write(portable, "LICENSES/upstream/example/LICENSE.txt", "obsolete notice\n")
+    repo = tmp_path / "repo"
+    _repository(repo)
+    reviewed = "reviewed public notice\n"
+    _write(repo, "packaging/extra-notices/example/LICENSE.txt", reviewed)
+    destination = tmp_path / "release"
+    report = exporter.export_portable(portable, repo, destination)
+    assert report["reviewed_notice_files"] >= 1
+    assert (destination / "LICENSES/upstream/example/LICENSE.txt").read_text(
+        encoding="utf-8"
+    ) == reviewed
+
+
+def test_portable_readme_links_target_included_source_docs(exporter, tmp_path):
+    portable = tmp_path / "portable"
+    _portable(portable)
+    repo = tmp_path / "repo"
+    _repository(repo)
+    _write(repo, "README.md", "[Publishing](docs/PUBLISHING.md)\n")
+    destination = tmp_path / "release"
+    exporter.export_portable(portable, repo, destination)
+    assert (destination / "README.md").read_text(encoding="utf-8") == (
+        "[Publishing](source/docs/PUBLISHING.md)\n"
+    )
+    assert (destination / "source/docs/PUBLISHING.md").is_file()
+
+
+def test_portable_keeps_supplemental_library_source_but_excludes_wheels(exporter, tmp_path):
+    portable = tmp_path / "portable"
+    _portable(portable)
+    repo = tmp_path / "repo"
+    _repository(repo)
+    notices = tmp_path / "reviewed-notices"
+    archive = _write(notices, "example/library-source.tar.bz2", b"synthetic upstream source")
+    _write(notices, "example/private.whl", b"synthetic excluded wheel")
+    destination = tmp_path / "release"
+    exporter.export_portable(portable, repo, destination, notices)
+    assert (destination / "LICENSES/upstream/example/library-source.tar.bz2").read_bytes() == (
+        archive.read_bytes()
+    )
+    assert not (destination / "LICENSES/upstream/example/private.whl").exists()
+
+
+def test_repository_preserves_upstream_patches_but_not_source_archives(exporter, tmp_path):
+    source = tmp_path / "project"
+    _repository(source)
+    patch = _write(source, "packaging/extra-notices/example/upstream.patch", "synthetic patch\n")
+    _write(source, "packaging/extra-notices/example/library-source.tar.gz", b"upstream archive")
+    destination = tmp_path / "public"
+    exporter.export_repository(source, destination)
+    assert (destination / "packaging/extra-notices/example/upstream.patch").read_bytes() == patch.read_bytes()
+    assert not (destination / "packaging/extra-notices/example/library-source.tar.gz").exists()
+
+
+@pytest.mark.parametrize("text", [
+    None, "# Status\n", "<!-- release-status: blocked -->\n",
+    "<!-- release-status: approved -->\n<!-- release-status: blocked -->\n",
+    "<!-- release-status: approved -->\n<!-- release-status: approved -->\n",
+])
+def test_final_release_requires_one_explicit_reviewed_approval(exporter, tmp_path, text):
+    source = tmp_path / "project"
+    source.mkdir()
+    if text is not None:
+        _write(source, "docs/RELEASE_STATUS.md", text)
+    with pytest.raises(ValueError):
+        exporter.require_final_release_approval(source)
+
+
+def test_final_release_accepts_explicit_approval_marker(exporter, tmp_path):
+    source = tmp_path / "project"
+    _write(source, "docs/RELEASE_STATUS.md", "# Status\n\n<!-- release-status: approved -->\n")
+    exporter.require_final_release_approval(source)
+
+
+@pytest.mark.parametrize("flags", [[], ["--candidate"]])
+def test_cli_defaults_to_candidate_and_labels_manifest(exporter, tmp_path, monkeypatch, capsys, flags):
+    source = tmp_path / "project"
+    _repository(source)
+    portable = tmp_path / "portable"
+    _portable(portable)
+    output = tmp_path / "export"
+    monkeypatch.setattr(sys, "argv", ["prepare_public_release.py", "--source", str(source),
+                                    "--portable", str(portable), "--output", str(output), *flags])
+    exporter.main()
+    assert (output / "ScreenTranslator-0.1.0-Windows-x64-candidate.zip").is_file()
+    assert not (output / "ScreenTranslator-0.1.0-Windows-x64.zip").exists()
+    assert '"release_channel": "candidate"' in (output / "EXPORT_MANIFEST.json").read_text()
+    capsys.readouterr()
+
+
+def test_cli_refuses_final_before_creating_any_output(exporter, tmp_path, monkeypatch, capsys):
+    source = tmp_path / "project"
+    _repository(source)
+    _write(source, "docs/RELEASE_STATUS.md", "<!-- release-status: blocked -->\n")
+    output = tmp_path / "export"
+    monkeypatch.setattr(sys, "argv", ["prepare_public_release.py", "--source", str(source),
+                                    "--portable", str(tmp_path / "missing-portable"),
+                                    "--output", str(output), "--final"])
+    with pytest.raises(SystemExit) as exc:
+        exporter.main()
+    assert exc.value.code == 2
+    assert not output.exists()
+    assert "review is incomplete" in capsys.readouterr().err
+
+
+def test_cli_final_export_requires_flag_and_approval(exporter, tmp_path, monkeypatch, capsys):
+    source = tmp_path / "project"
+    _repository(source)
+    _write(source, "docs/RELEASE_STATUS.md", "<!-- release-status: approved -->\n")
+    portable = tmp_path / "portable"
+    _portable(portable)
+    output = tmp_path / "export"
+    monkeypatch.setattr(sys, "argv", ["prepare_public_release.py", "--source", str(source),
+                                    "--portable", str(portable), "--output", str(output), "--final"])
+    exporter.main()
+    assert (output / "ScreenTranslator-0.1.0-Windows-x64.zip").is_file()
+    assert '"release_channel": "final"' in (output / "EXPORT_MANIFEST.json").read_text()
+    capsys.readouterr()
+
+
+def test_cli_candidate_and_final_are_mutually_exclusive(exporter, tmp_path, monkeypatch, capsys):
+    output = tmp_path / "export"
+    monkeypatch.setattr(sys, "argv", ["prepare_public_release.py", "--portable", "unused",
+                                    "--output", str(output), "--candidate", "--final"])
+    with pytest.raises(SystemExit) as exc:
+        exporter.main()
+    assert exc.value.code == 2
+    assert not output.exists()
+    capsys.readouterr()
+
+
+def test_final_release_rejects_linked_status(exporter, tmp_path, monkeypatch):
+    source = tmp_path / "project"
+    status = _write(source, "docs/RELEASE_STATUS.md", "<!-- release-status: approved -->\n")
+    original = exporter._linked
+    monkeypatch.setattr(exporter, "_linked", lambda path: Path(path) == status or original(path))
+    with pytest.raises(ValueError):
+        exporter.require_final_release_approval(source)
+
+
+def test_portable_status_links_target_included_source_docs(exporter, tmp_path):
+    portable = tmp_path / "portable"
+    _portable(portable)
+    repo = tmp_path / "repo"
+    _repository(repo)
+    names = ("THIRD_PARTY_BINARY_NOTICES.md", "CPU_ONLY_BUILD_PLAN.md",
+             "COPYLEFT_SOURCE_NOTICES.md", "MICROSOFT_RUNTIME_TERMS.md",
+             "CPU_BUILD_PROVENANCE.md", "项目说明报告.md")
+    text = "\n".join(f"[Notice]({name})" for name in names) + "\n"
+    _write(repo, "docs/RELEASE_STATUS.md", text)
+    for name in names:
+        _write(repo, "docs/" + name)
+    _write(repo, "docs/项目说明报告.md",
+           "[Build](CPU_BUILD_PROVENANCE.md)\n[Readme](../README.md)\n")
+    destination = tmp_path / "release"
+    exporter.export_portable(portable, repo, destination)
+    exported = (destination / "发布许可状态.md").read_text(encoding="utf-8")
+    for name in names:
+        assert f"](source/docs/{name})" in exported
+        assert (destination / "source/docs" / name).is_file()
+    report = (destination / "项目说明报告.md").read_text(encoding="utf-8")
+    assert "](source/docs/CPU_BUILD_PROVENANCE.md)" in report
+    assert "](source/README.md)" in report
+
+
 def test_portable_does_not_reuse_old_source_reports_or_user_data(exporter, tmp_path):
     portable = tmp_path / "portable"
     _portable(portable)
@@ -152,6 +323,7 @@ def test_portable_does_not_reuse_old_source_reports_or_user_data(exporter, tmp_p
         "config.json", "config.json.broken", "cache.sqlite3", "cache.sqlite3-wal",
         ".env", ".git/config", "screenshots/sample.png", "private.md",
         "README.md", "LICENSES/example/private.whl",
+        "_internal/example.dist-info/direct_url.json",
     }
     for name in excluded:
         _write(portable, name, "SYNTHETIC_PRIVATE_OLD_PACKAGE_MARKER\n")
@@ -190,6 +362,15 @@ def test_zip_refuses_to_overwrite_existing_target(exporter, tmp_path):
     with pytest.raises((FileExistsError, ValueError, RuntimeError)):
         exporter.zip_directory(source, target)
     assert target.read_bytes() == b"existing synthetic archive"
+
+
+def test_zip_rejects_output_inside_input_tree_without_creating_it(exporter, tmp_path):
+    source = tmp_path / "repository"
+    _write(source, "README.md")
+    target = source / "nested" / "public.zip"
+    with pytest.raises(ValueError):
+        exporter.zip_directory(source, target)
+    assert not target.exists()
 
 
 def _symlink(link: Path, target: Path):

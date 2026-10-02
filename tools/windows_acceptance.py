@@ -28,6 +28,7 @@ from screen_translator.inference.ocr.rapidocr_engine import RapidOCREngine
 from screen_translator.platform.windows.hotkeys import WindowsHotkeys
 from screen_translator.platform.windows.monitors import cursor_position, enumerate_monitors
 from screen_translator.ui.subtitle_overlay import SubtitleOverlay
+from screen_translator.ui.fonts import register_chinese_fallback
 
 
 class CaptionWindow(QWidget):
@@ -45,7 +46,7 @@ class CaptionWindow(QWidget):
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor("#202020"))
         painter.setPen(QColor("white"))
-        painter.setFont(QFont("Microsoft YaHei", 30))
+        painter.setFont(QFont("Microsoft YaHei UI", 30))
         painter.drawText(self.rect().adjusted(28, 0, -24, 0), Qt.AlignmentFlag.AlignVCenter, self.text)
 
 
@@ -67,6 +68,7 @@ def main() -> int:
     report = {"passed_core_native": False, "screenshots_saved": False,
               "interactive_drag_tested": False, "physical_escape_tested": False,
               "capture_tests": [], "hotkey_errors": []}
+    report["caption_font_provider"] = register_chinese_fallback(app)
     caption = CaptionWindow()
     hotkeys = WindowsHotkeys()
     overlay = None
@@ -78,7 +80,7 @@ def main() -> int:
             time.sleep(0.05)
 
     try:
-        report["font_family"] = QFontInfo(QFont("Microsoft YaHei", 30)).family()
+        report["font_family"] = QFontInfo(QFont("Microsoft YaHei UI", 30)).family()
         try:
             cursor_position()
             report["cursor_api_available"] = True
@@ -141,7 +143,10 @@ def main() -> int:
         report["caption_did_not_take_focus"] = before_overlay == original_foreground
         report["passed_core_native"] = (all(c["passed"] for c in report["capture_tests"])
             and report["overlay_did_not_take_focus"] and report["overlay_native_styles_ok"]
-            and report["native_hotkey_message_routing_ok"] and not report["network_attempts"])
+            and report["native_hotkey_message_routing_ok"]
+            and report["all_hotkey_actions_registered"] and not report["hotkey_errors"]
+            and report["capture_exclusion_api_succeeded"] and report["overlay_excluded_from_mss"]
+            and not report["network_attempts"])
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
     finally:

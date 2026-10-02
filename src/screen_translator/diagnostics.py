@@ -31,15 +31,10 @@ def no_network():
 def text_fixture(text: str):
     import numpy as np
     from PIL import Image, ImageDraw, ImageFont
-    from pathlib import Path
-    import os
+    from .ui.fonts import diagnostic_font_path
     # Read the font file directly. Headless/sandboxed Windows processes may
     # not enumerate native fonts and QPainter would then draw only tofu boxes.
-    fonts = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
-    font_path = next((fonts / name for name in ("msyh.ttc", "msjh.ttc", "simsun.ttc", "arial.ttf")
-                      if (fonts / name).is_file()), None)
-    if font_path is None:
-        raise RuntimeError("自检所需的 Windows 字体缺失。")
+    font_path = diagnostic_font_path(text)
     image = Image.new("RGB", (1080, 130), "#202020")
     painter = ImageDraw.Draw(image)
     painter.text((28, 65), text, font=ImageFont.truetype(str(font_path), 40),

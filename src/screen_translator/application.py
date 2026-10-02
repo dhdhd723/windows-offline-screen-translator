@@ -54,9 +54,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Windows offline screen translator")
     parser.add_argument("--self-test", action="store_true", help="Run synthetic offline OCR/translation diagnostics")
     parser.add_argument("--smoke-test", action="store_true", help="Initialize desktop integration, then exit")
+    parser.add_argument("--accept-runtime-terms", action="store_true",
+                        help="Explicitly accept the shipped Microsoft runtime terms for an authorized diagnostic run; requires --self-test or --smoke-test")
     parser.add_argument("--report", type=Path)
     parser.add_argument("--data-dir", type=Path)
     args = parser.parse_args(argv)
+    if args.accept_runtime_terms and not (args.self_test or args.smoke_test):
+        parser.error("--accept-runtime-terms requires --self-test or --smoke-test; normal first use requires the consent dialog")
     if args.data_dir:
         os.environ["SCREEN_TRANSLATOR_DATA"] = str(args.data_dir.resolve())
     if sys.platform != "win32":
@@ -69,6 +73,25 @@ def main(argv: list[str] | None = None) -> int:
     if sys.stderr is None:
         sys.stderr = open(os.devnull, "w", encoding="utf-8")
     configure_logging()
+    from .storage.settings import SettingsStore
+    from .runtime_terms import authorize_runtime_terms
+    store = SettingsStore()
+    settings = store.load()
+    diagnostic = args.self_test or args.smoke_test
+    consent = None
+    if diagnostic:
+        # Automated tests do not implicitly accept legal terms and do not open a
+        # blocking first-run dialog. A deliberate flag or matching saved choice
+        # is required before any desktop integration or inference is initialized.
+        consent = authorize_runtime_terms(settings, store, explicit_accept=args.accept_runtime_terms)
+        if not consent.accepted:
+            report = {"passed": False, "failure": "runtime_terms_" + consent.failure,
+                      "detail": consent.error, "required_runtime_terms_version": consent.version}
+            if args.report:
+                args.report.parent.mkdir(parents=True, exist_ok=True)
+                args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 3
     from .platform.windows.dpi import enable_dpi_awareness
     enable_dpi_awareness()
     from PySide6.QtWidgets import QApplication, QMessageBox
@@ -78,9 +101,32 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationDisplayName("本地屏幕翻译器")
     app.setOrganizationName("ScreenTranslator")
     app.setQuitOnLastWindowClosed(False)
+    from .ui.fonts import register_chinese_fallback
+    try:
+        register_chinese_fallback(app)
+    except RuntimeError as exc:
+        logging.error("Application font initialization failed: %s", exc)
+        if diagnostic:
+            report = {"passed": False, "failure": "display_font", "detail": str(exc)}
+            if args.report:
+                args.report.parent.mkdir(parents=True, exist_ok=True)
+                args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            QMessageBox.critical(None, "ScreenTranslator could not start", str(exc))
+        return 4
+    if not diagnostic:
+        from .ui.runtime_terms_dialog import prompt_runtime_terms
+        consent = authorize_runtime_terms(settings, store, prompt=prompt_runtime_terms)
+        if not consent.accepted:
+            if consent.failure != "declined":
+                QMessageBox.critical(None, "程序未启动", consent.error)
+            return 3
     if args.self_test:
         from .diagnostics import run_self_test
         report = run_self_test()
+        report.update(runtime_terms_version=consent.version,
+                      runtime_terms_acceptance=consent.acceptance)
         if args.report:
             args.report.parent.mkdir(parents=True, exist_ok=True)
             args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -91,7 +137,6 @@ def main(argv: list[str] | None = None) -> int:
     from .platform.windows.hotkeys import WindowsHotkeys
     from .platform.windows.monitors import validate_region
     from .ui.main import MainUI
-    from .storage.settings import SettingsStore
     from .storage.translation_cache import TranslationCache
     from .inference.ocr.rapidocr_engine import RapidOCREngine
     from .inference.translation.ctranslate2_engine import CTranslate2Engine
@@ -102,8 +147,6 @@ def main(argv: list[str] | None = None) -> int:
         QMessageBox.information(None, "本地屏幕翻译器", "程序已经在运行，请通过右下角托盘图标操作。")
         guard.close()
         return 0
-    store = SettingsStore()
-    settings = store.load()
     ui = MainUI(settings)
     hotkeys = WindowsHotkeys()
     hotkey_errors: list[str] = []
@@ -309,7 +352,9 @@ def main(argv: list[str] | None = None) -> int:
         report = {"passed": smoke_passed, "version": __version__, "models_missing": missing,
                   "region_valid": region_valid, "hotkey_errors": hotkey_errors,
                   "effective_hotkeys": hotkeys.effective_hotkeys,
-                  "interactive_selection_tested": False}
+                  "interactive_selection_tested": False,
+                  "runtime_terms_version": consent.version,
+                  "runtime_terms_acceptance": consent.acceptance}
         if args.report:
             args.report.parent.mkdir(parents=True, exist_ok=True)
             args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

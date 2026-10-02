@@ -25,9 +25,24 @@ PRIVATE_SUFFIXES = {".pyc", ".pyo", ".log", ".db", ".sqlite", ".sqlite3", ".pem"
                     ".p12", ".pfx", ".whl", ".part", ".bak", ".tmp"}
 PRIVATE_NAMES = {"config.json", "settings.json", "credentials.json", "secrets.json", "tests.xml",
                  "id_rsa", "id_ed25519"}
-TEXT_SUFFIXES = {".txt", ".md", ".html", ".htm", ".rst", ".apache", ".bsd"}
+TEXT_SUFFIXES = {".txt", ".md", ".html", ".htm", ".rst", ".apache", ".bsd", ".patch"}
 ARCHIVE_SUFFIXES = (".tar.xz", ".tar.gz", ".tgz", ".tar.bz2")
 ZIP_TIME = (2020, 1, 1, 0, 0, 0)
+
+
+def require_final_release_approval(source: Path) -> None:
+    """Require a manually reviewed status before naming an export as final.
+
+    This is an accidental-publication guard, not an automated legal review.
+    Update the status only after the documented release checks are complete.
+    """
+    status = Path(source) / "docs" / "RELEASE_STATUS.md"
+    if not status.is_file() or _linked(status):
+        raise ValueError("Final release requires a reviewed docs/RELEASE_STATUS.md")
+    markers = [line.strip() for line in status.read_text(encoding="utf-8-sig").splitlines()
+               if line.strip().startswith("<!-- release-status:")]
+    if markers != ["<!-- release-status: approved -->"]:
+        raise ValueError("Release review is incomplete; export a candidate instead")
 
 
 def _linked(path: Path) -> bool:
@@ -93,6 +108,12 @@ def _model_private(path: Path) -> bool:
 
 
 def _runtime_private(path: Path) -> bool:
+    # PEP 610 records how pip installed a wheel; local file URLs disclose the
+    # developer's build directory and are not needed by the frozen runtime.
+    if path.name.lower() == "direct_url.json" and any(
+        part.lower().endswith(".dist-info") for part in path.parts
+    ):
+        return True
     # certifi's public CA bundle is not a private key. Preserve stock runtime.
     if path.as_posix() == "certifi/cacert.pem":
         return False
@@ -119,6 +140,7 @@ def _source_file(path: Path) -> bool:
         return path.suffix == ".md"
     if folder == "packaging":
         return (path == Path("packaging/icon.ico") or path.suffix in {".spec", ".manifest"}
+                or path == Path("packaging/fonts/NotoSansCJKsc-Regular.otf")
                 or (acceptable_license_path(path) and not path.name.lower().endswith(ARCHIVE_SUFFIXES)))
     return False
 
@@ -153,7 +175,8 @@ def sha256(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def export_portable(portable: Path, repo: Path, destination: Path) -> dict:
+def export_portable(portable: Path, repo: Path, destination: Path,
+                    supplemental_notices: Path | None = None) -> dict:
     portable = Path(portable)
     destination = Path(destination)
     if _linked(portable) or destination.resolve().is_relative_to(portable.resolve()):
@@ -172,9 +195,24 @@ def export_portable(portable: Path, repo: Path, destination: Path) -> dict:
         private_filter = {"models": _model_private, "_internal": _runtime_private,
                           "LICENSES": _private}[folder]
         counts[folder + "_files"] = _copy_files(root, destination / folder, predicate, private_filter)
+    # The input portable may have been built before a notice audit was completed.
+    # Overlay the reviewed, source-controlled notices so a fresh public export
+    # cannot silently keep an obsolete license text from an older package.
+    reviewed_notices = (Path(supplemental_notices) if supplemental_notices is not None
+                        else Path(repo) / "packaging" / "extra-notices")
+    if reviewed_notices.is_dir():
+        counts["reviewed_notice_files"] = _copy_files(
+            reviewed_notices,
+            destination / "LICENSES" / "upstream",
+            acceptable_license_path,
+        )
+    else:
+        counts["reviewed_notice_files"] = 0
     counts["source_files"] = _copy_files(Path(repo), destination / "source", _source_file)
     for name, relative in (("README.md", "README.md"), ("使用说明.md", "docs/使用说明.md"),
-                           ("技术方案.md", "docs/技术方案.md")):
+                           ("技术方案.md", "docs/技术方案.md"),
+                           ("项目说明报告.md", "docs/项目说明报告.md"),
+                           ("发布许可状态.md", "docs/RELEASE_STATUS.md")):
         # Old bundle documents may contain machine-specific acceptance notes.
         # Only reuse the reviewed source documentation, never old package docs.
         original = Path(repo) / relative
@@ -183,13 +221,23 @@ def export_portable(portable: Path, repo: Path, destination: Path) -> dict:
         if _linked(original):
             raise ValueError("Refusing linked documentation")
         text = original.read_text(encoding="utf-8-sig")
+        if relative == "README.md":
+            text = text.replace("](docs/", "](source/docs/")
+        elif relative.startswith("docs/"):
+            text = text.replace("](../README.md)", "](source/README.md)")
+            for doc_name in ("THIRD_PARTY_BINARY_NOTICES.md", "CPU_ONLY_BUILD_PLAN.md",
+                             "COPYLEFT_SOURCE_NOTICES.md", "MICROSOFT_RUNTIME_TERMS.md",
+                             "CPU_BUILD_PROVENANCE.md", "RELEASE_STATUS.md", "PUBLISHING.md",
+                             "技术方案.md", "使用说明.md", "项目说明报告.md"):
+                text = text.replace(f"]({doc_name})", f"](source/docs/{doc_name})")
         (destination / name).write_text(text, encoding="utf-8")
     (destination / "发布隐私说明.md").write_text(
         "# 公开运行包的隐私边界\n\n"
         "本包使用独立导出目录，不附带原始验收报告、运行日志、用户配置、译文数据库、真实截图或原 Git 历史。"
         "第三方署名和许可证保留；可执行文件和模型未为脱敏而修改。\n\n"
         "程序运行后仍会在用户设备上产生本地设置和诊断数据。请勿将这些数据直接提交到公开仓库。"
-        "本文件只说明导出规则，不证明全部依赖已经取得公开再分发授权。详见 source/docs/PUBLISHING.md。\n",
+        "本文件只说明导出规则。第三方二进制核验依据、适用条件和剩余边界见 "
+        "source/docs/THIRD_PARTY_BINARY_NOTICES.md 与 source/docs/PUBLISHING.md。\n",
         encoding="utf-8")
     before, after = sha256(executable), sha256(destination / executable.name)
     if before != after:
@@ -199,6 +247,9 @@ def export_portable(portable: Path, repo: Path, destination: Path) -> dict:
 
 def zip_directory(root: Path, target: Path) -> None:
     root = Path(root)
+    target = Path(target)
+    if target.resolve().is_relative_to(root.resolve()):
+        raise ValueError("Archive output must be outside the archived directory")
     if target.exists() or _linked(target):
         raise FileExistsError("Archive already exists; choose a new target")
     with zipfile.ZipFile(target, mode="x", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
@@ -218,14 +269,28 @@ def main() -> None:
     parser.add_argument("--source", type=Path, default=PROJECT_ROOT)
     parser.add_argument("--portable", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    channel = parser.add_mutually_exclusive_group()
+    channel.add_argument("--candidate", action="store_true",
+                         help="Export a non-final release candidate (the default)")
+    channel.add_argument("--final", action="store_true",
+                         help="Export a final release only after the documented review is approved")
     args = parser.parse_args()
+    if args.final:
+        try:
+            require_final_release_approval(args.source)
+        except ValueError as exc:
+            parser.error(str(exc))
     _new_directory(args.output)
     repo = args.output / "repo"
     portable = args.output / "ScreenTranslator"
     results = {"repository": export_repository(args.source, repo),
-               "portable": export_portable(args.portable, repo, portable)}
-    for root, name in ((repo, "ScreenTranslator-source-public.zip"),
-                       (portable, "ScreenTranslator-Windows-x64-privacy-safe.zip")):
+               "portable": export_portable(args.portable, repo, portable,
+                                           args.source / "packaging" / "extra-notices")}
+    results["release_channel"] = "final" if args.final else "candidate"
+    portable_name = ("ScreenTranslator-0.1.0-Windows-x64.zip" if args.final
+                     else "ScreenTranslator-0.1.0-Windows-x64-candidate.zip")
+    for root, name in ((repo, "ScreenTranslator-0.1.0-source.zip"),
+                       (portable, portable_name)):
         target = args.output / name
         zip_directory(root, target)
         results[name] = {"sha256": sha256(target), "bytes": target.stat().st_size}

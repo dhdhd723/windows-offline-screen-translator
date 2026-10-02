@@ -4,6 +4,8 @@ from PyInstaller.utils.hooks import collect_dynamic_libs, collect_data_files, co
 project = Path(SPECPATH).parent
 binaries = collect_dynamic_libs('onnxruntime') + collect_dynamic_libs('ctranslate2')
 datas = collect_data_files('rapidocr', excludes=['**/models/**'])
+for name in ('NotoSansCJKsc-Regular.otf', 'OFL.txt', 'README.md'):
+    datas.append((str(project / 'packaging' / 'fonts' / name), 'fonts'))
 for package in ('rapidocr', 'onnxruntime', 'ctranslate2', 'sentencepiece'):
     datas += copy_metadata(package)
 
@@ -20,6 +22,8 @@ a = Analysis([str(project / 'launcher.py')], pathex=[str(project / 'src')],
 # Qt's broad GUI hook collects optional PDF and virtual-keyboard plugins.
 # This Widgets-only app uses neither; the keyboard is a GPL-only Qt module.
 # Remove the optional plugins together with their unused DLL dependencies.
+# Windows 10/11 always use the OS UCRT/API-set implementation. Do not ship
+# redundant SDK/downlevel compatibility copies or broaden the OS target.
 unused_binaries = {
     'qt6pdf.dll', 'qt6virtualkeyboard.dll', 'qt6qml.dll', 'qt6qmlmeta.dll',
     'qt6qmlmodels.dll', 'qt6qmlworkerscript.dll', 'qt6quick.dll',
@@ -27,6 +31,8 @@ unused_binaries = {
 }
 a.binaries = [item for item in a.binaries
               if Path(item[0]).name.lower() not in unused_binaries
+              and Path(item[0]).name.lower() != 'ucrtbase.dll'
+              and not Path(item[0]).name.lower().startswith('api-ms-win-')
               and not Path(item[0]).name.lower().startswith('opencv_videoio_ffmpeg')]
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='ScreenTranslator',

@@ -7,20 +7,27 @@
 从项目根目录运行以下命令，路径均是项目内的通用示例：
 
 ```powershell
-python tools/prepare_public_release.py --portable dist/ScreenTranslator --output build/public-export
+python tools/prepare_public_release.py --portable dist/ScreenTranslator --output build/public-export --candidate
 ```
 
 工具会生成：
 
 - `repo/`：用于创建 GitHub 仓库的干净源码，不携带原 `.git` 历史。
-- `ScreenTranslator-source-public.zip`：同一份公开源码的压缩包。
-- `ScreenTranslator-Windows-x64-privacy-safe.zip`：经过隐私处理的便携运行包。
+- `ScreenTranslator-0.1.0-source.zip`：同一份公开源码的压缩包。
+- `ScreenTranslator-0.1.0-Windows-x64-candidate.zip`：默认候选包；审核通过且明确 `--final` 时，名称为 `ScreenTranslator-0.1.0-Windows-x64.zip`。实际验收范围见 [发布状态](RELEASE_STATUS.md)，不要混用历史候选压缩包。
+
+不提供参数时也默认生成候选包。只有完成剩余项、验收并将发布状态的
+机器标记明确改为 `approved` 后，才可使用 `--final` 生成最终 Release 文件。
+`--final` 与 `--candidate` 不能同时使用。状态标记是防误发布检查，不是自动法律审核。
 
 阅读导出工具的检查结果和报告。任何未解决的检查失败都应先处理，再发布。仅上传新的导出文件；不要混入原测试目录或用户数据。工具处理的是本地文件，不会替你创建仓库、修改账号或向 GitHub 上传内容。
 
 ## 哪些内容不能上传
 
 原始测试报告、运行日志和异常堆栈可能包含本机绝对路径、显示器布局、测试时间和进程标识，不应直接公开。`config.json` 及其备份包含用户选区和设置；SQLite 缓存及其 WAL/SHM 文件可能明文保存译文，也不能公开。真实截图、录屏、环境文件、访问凭据、虚拟环境、构建缓存和原 Git 历史同样不属于发布源码。
+
+便携导出还排除 wheel 安装元数据的 `*.dist-info/direct_url.json`，避免
+泄露本地构建文件 URL；版本、许可、运行二进制和公开固定来源记录继续保留。
 
 默认运行不会保存截图，磁盘译文缓存必须由用户主动开启。不过，“默认不保存”不代表已有日志、配置或缓存可以放心上传。关闭磁盘缓存不会自动删除已有数据库。向他人提供故障日志前，应再次检查内容并脱敏。
 
@@ -38,12 +45,14 @@ python tools/prepare_public_release.py --portable dist/ScreenTranslator --output
 
 第三方作者、版权声明、许可证与官方来源链接不是用户隐私，应原样保留。应用自身尚未由作者选定开源许可证；公开源文件不等于授予他人任意使用、修改或再分发的权利。正式声明“开源”前，作者需要选择并添加适合自己的应用许可证。
 
-模型、Qt/PySide6、推理组件等各有自己的许可条件。Intel OpenMP 的公开再分发授权仍需核对随包提供的许可和第三方文本，不能仅以其文件已随运行包出现作为许可确认。隐私检查不对法律许可、商用授权或全部依赖的再分发合规作保证；若授权仍有疑问，应先只发布经确认可公开的源码，暂缓相应二进制发布。
+模型、Qt/PySide6、推理组件等各有自己的许可条件。本轮以同版本纯 CPU 重建代替旧 Intel/MKL/CUDA wheel，使用 oneDNN CPU 与官方未修改 Microsoft OpenMP/CRT 原件。具体构建配置和原生哈希见 [CPU 构建记录](CPU_BUILD_PROVENANCE.md)，旧 Intel 核验保留为历史证据而非当前使用清单。详细边界见 [原生二进制核验记录](THIRD_PARTY_BINARY_NOTICES.md)。
+
+已识别的 MPL 组件对应源码与获取说明已补齐，详见 [对应源码核验](COPYLEFT_SOURCE_NOTICES.md)。作者已确认个人独立开发并安装正式 Community；用户须明确接受随包微软保护条款，实际 DLL 与验收记录见 [微软核验](MICROSOFT_RUNTIME_TERMS.md)。最终发布时保留完整 `LICENSES/`、模型声明和对应源码；不要修改上游二进制。应用自身是否采用 MIT 等开源许可证仍由作者决定。
 
 ## 发布前最后检查
 
 - 上传内容只来自新导出目录或新生成的净化包，没有旧压缩包、真实用户数据和历史。
 - 隐私检查报告无未解决项；报告本身也没有本机身份或路径。
-- 仓库中的第三方署名和许可文本保留完整；应用许可由作者主动决定。
+- 仓库和便携包中的第三方署名及许可文本保留完整；自建 CPU 库与微软原件哈希和核验记录一致；实际对应源码档案随包保留；应用许可由作者主动决定。
 - 提交使用预期的公开作者名和 GitHub `noreply` 邮箱；理解账号仍可被关联。
 - 在解压后的净化程序包上完成离线自检，并在 Release 说明中准确列出尚未人工验证的硬件场景。

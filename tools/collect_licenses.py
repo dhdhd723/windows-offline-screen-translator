@@ -12,7 +12,7 @@ RUNTIME_PACKAGES = [
     "sentencepiece", "numpy", "opencv-python", "mss", "rapidocr", "rapidfuzz", "pyclipper",
     "Shapely", "Pillow", "tqdm", "omegaconf", "antlr4-python3-runtime", "requests",
     "colorlog", "six", "PyYAML", "protobuf", "flatbuffers", "packaging", "sympy",
-    "mpmath", "certifi", "charset_normalizer", "idna", "urllib3", "colorama",
+    "mpmath", "certifi", "charset_normalizer", "idna", "urllib3", "colorama", "PyInstaller",
 ]
 
 
@@ -34,6 +34,11 @@ def main() -> None:
                "Qt/PySide6 is distributed as replaceable dynamic libraries under LGPLv3.\n",
                "ScreenTranslator application source and build instructions are in source/.\n",
                "Complete upstream texts not present in wheels are in LICENSES/upstream/.\n",
+               "Corresponding MPL dependency sources and access notices are in LICENSES/upstream/onnxruntime-eigen, LICENSES/upstream/tqdm-4.70.1 and LICENSES/upstream/certifi-2026.7.22.\n",
+               "This software is based in part on the work of the FreeType Team (https://freetype.org); FreeType is used under the FreeType License (FTL).\n",
+               "This software is based in part on the work of the Independent JPEG Group.\n",
+               "The unmodified Noto Sans CJK SC 2.004 fallback font is licensed under SIL OFL 1.1; its copyright, provenance and full license are in LICENSES/NotoSansCJK/ and _internal/fonts/.\n",
+               "PyInstaller's embedded bootloader has its GPL Bootloader Exception; embedded runtime hooks/modules use Apache-2.0. The full upstream licensing text is retained in LICENSES/PyInstaller/. This does not place the application under GPL.\n",
                "The original model attribution and licenses are in models/*/LICENSE.txt and NOTICE.txt.\n",
                "Python: https://docs.python.org/3/license.html\n"]
     for package in RUNTIME_PACKAGES:
@@ -53,6 +58,13 @@ def main() -> None:
     if python_license.is_file():
         shutil.copy2(python_license, args.destination / "Python-LICENSE.txt")
     packaging = Path(__file__).resolve().parents[1] / "packaging"
+    for filename in ("OFL.txt", "README.md"):
+        original = packaging / "fonts" / filename
+        if not original.is_file():
+            raise FileNotFoundError(f"Required bundled-font notice is missing: {filename}")
+        target = args.destination / "NotoSansCJK" / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(original, target)
     for folder, name in (("extra-notices", "upstream"), ("qt-notices", "Qt")):
         supplemental = packaging / folder
         if supplemental.is_dir():

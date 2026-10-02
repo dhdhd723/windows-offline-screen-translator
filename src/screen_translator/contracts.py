@@ -47,6 +47,7 @@ class Settings:
     overlay_position: tuple[int, int] | None = None
     cache_enabled: bool = False
     auto_start: bool = False
+    runtime_terms_version: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

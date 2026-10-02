@@ -210,11 +210,13 @@ def run(args: argparse.Namespace) -> int:
                 layout.setContentsMargins(14, 8, 14, 8)
                 self.label = QLabel("The translation works offline.")
                 self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.label.setFont(QFont("Microsoft YaHei", 29))
+                self.label.setFont(QFont("Microsoft YaHei UI", 29))
                 self.label.setStyleSheet("color: white; background-color: #202020;")
                 layout.addWidget(self.label)
 
         app = QApplication([])
+        from screen_translator.ui.fonts import register_chinese_fallback
+        report["caption_font_provider"] = register_chinese_fallback(app)
         app.setQuitOnLastWindowClosed(False)
         caption = CaptionWindow()
         available = app.primaryScreen().availableGeometry()
@@ -241,7 +243,16 @@ def run(args: argparse.Namespace) -> int:
         run_dir = args.data_dir / f"run-{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
         run_dir.mkdir(parents=True, exist_ok=False)
         report["data_dir"] = str(run_dir)
-        SettingsStore(run_dir / "config.json").save(Settings(region=region, cache_enabled=True))
+        from screen_translator.runtime_terms import authorize_runtime_terms
+        test_store = SettingsStore(run_dir / "config.json")
+        test_settings = Settings(region=region, cache_enabled=True)
+        consent = authorize_runtime_terms(test_settings, test_store,
+                                          explicit_accept=args.accept_runtime_terms,
+                                          root=args.exe.parent, frozen=True)
+        if not consent.accepted:
+            raise RuntimeError("Read the shipped runtime terms and explicitly authorize this isolated acceptance run with --accept-runtime-terms")
+        report["runtime_terms_acceptance"] = consent.acceptance
+        report["runtime_terms_version"] = consent.version
         child = subprocess.Popen([str(args.exe), "--data-dir", str(run_dir)],
                                  cwd=str(args.exe.parent), stdin=subprocess.DEVNULL,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -335,6 +346,8 @@ def main() -> int:
                         default=PROJECT_ROOT / "build" / "frozen-capture-test.json")
     parser.add_argument("--launch-timeout", type=float, default=25.0)
     parser.add_argument("--stage-timeout", type=float, default=90.0)
+    parser.add_argument("--accept-runtime-terms", action="store_true",
+                        help="Explicitly accept the supplied runtime terms for this authorized isolated test")
     args = parser.parse_args()
     args.exe = args.exe.resolve()
     args.data_dir = args.data_dir.resolve()

@@ -29,3 +29,9 @@ top-level license contains only the standard license text:
 This directory covers these five upstream components. Notices for third-party
 code embedded in native libraries are supplied separately by their distributors;
 do not treat the component license as a replacement for such notices.
+
+Native redistribution evidence and notices are also retained for Intel OpenMP,
+Intel oneMKL, oneDNN 3.1.1, and dependencies compiled into CTranslate2 4.8.2.
+The public exporter overlays this reviewed directory onto `LICENSES/upstream`
+so an older portable input cannot reintroduce obsolete notice text. The audit
+scope and exact hashes are documented in `docs/THIRD_PARTY_BINARY_NOTICES.md`.

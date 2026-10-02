@@ -37,6 +37,9 @@ class SettingsStore:
                 for key in ("show_source", "esc_enabled", "cache_enabled", "auto_start"):
                     if not isinstance(getattr(settings, key), bool):
                         raise ValueError(f"Invalid boolean setting: {key}")
+                if (not isinstance(settings.runtime_terms_version, str)
+                        or len(settings.runtime_terms_version) > 256):
+                    raise ValueError("Invalid runtime terms acceptance version")
                 if settings.region and not settings.region.valid():
                     settings.region = None
                 if settings.region and settings.region.monitor_bounds is not None and (

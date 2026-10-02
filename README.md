@@ -1,12 +1,26 @@
 # 本地屏幕中英翻译器
 
+## 下载与运行（普通用户）
+
+无需安装 Python。请下载 [完整 Windows 运行包：ScreenTranslator-0.1.0-Windows-x64.zip](https://github.com/dhdhd723/windows-offline-screen-translator/releases/download/v0.1.0/ScreenTranslator-0.1.0-Windows-x64.zip)，或进入 [v0.1.0 发布页](https://github.com/dhdhd723/windows-offline-screen-translator/releases/tag/v0.1.0) 查看说明和校验值。不要下载 GitHub 自动生成的 Source code 压缩包来运行程序。
+
+1. 更新前，先从旧版托盘菜单选择“退出”，不要同时运行两个版本。
+2. 完整解压 ZIP，在 `ScreenTranslator` 文件夹内双击 `ScreenTranslator.exe`。保留同目录的 `_internal`、`models`、`LICENSES`，不要只复制 exe。
+3. 首次启动请按提示阅读并明确同意随包运行库条款，再使用 Alt+R 框选、Alt+T 开启／停止翻译。
+
+快捷键冲突时，以托盘提示的实际按键为准。默认 Alt+R 被占用会依次尝试 Alt+Shift+R、Ctrl+Alt+R；其他冲突可从托盘菜单操作或在设置中修改。
+
 Windows 10 2004 及以上 / Windows 11，64 位。截图、OCR 和中英互译全部在本机完成。发布包自带模型，不需要 Python，不需要付费 API，也不需要显卡环境。
 
 本仓库是开发源码，不包含 exe 或模型权重；“无需 Python”仅指完整便携运行包。项目范围、使用方式、测试结果及隐私边界见 [项目说明报告](docs/项目说明报告.md)。
 
 ## 普通用户使用
 
-完整解压便携包，在 ScreenTranslator 文件夹内双击 ScreenTranslator.exe。请保留同目录的 `_internal` 和 `models` 文件夹，不要只复制 exe。
+完整解压便携包，在 ScreenTranslator 文件夹内双击 ScreenTranslator.exe。请保留同目录的 `_internal`、`models` 和 `LICENSES` 文件夹，不要只复制 exe。下载的是完整 Windows 运行包，不是 GitHub 自动生成的源码 ZIP。
+
+首次正常启动须阅读并明确同意随包微软运行库条款，然后才会注册快捷键和
+开启监控。不同意会退出；确认只存于本机设置，条款内容变化后会重新询问。
+该条款不限制 Qt/GEOS/Eigen 等组件原许可证授予的源码、替换和调试权利。
 
 1. 按 Alt+R，拖动鼠标框选文字所在区域。可选择任意显示器，当前版本要求一个选区位于同一显示器内。
 2. 按 Alt+T，开启持续翻译。首次翻译需加载本地模型，后续译文在文字变化后更新。
@@ -29,11 +43,20 @@ Windows 10 2004 及以上 / Windows 11，64 位。截图、OCR 和中英互译�
 
 `--smoke-test --report 报告路径.json` 初始化 UI 和 Windows 集成后自动退出。自检结果不能代替具体游戏、显示器和 DPI 的实际验收。
 
+诊断也需要先接受相同的随包条款；未接受时会返回退出码 3，而不是隐式同意。
+明确读过条款并授权自动验收后，可对 `--self-test` 或 `--smoke-test` 增加
+`--accept-runtime-terms`；该参数不能用于绕过普通 GUI 首次确认。
+
 ## 开发与构建
 
 开发环境：Python 3.12 x64。项目使用 PySide6 Widgets、Win32 API、MSS、RapidOCR/ONNX Runtime、CTranslate2 INT8 和 SentencePiece。运行时不使用 PyTorch 或 Transformers。
 
 可用 `requirements-lock.txt` 重建本次开发环境（包含测试与模型转换依赖）；也可只安装 pyproject.toml 中需要的依赖。执行：
+
+以下依赖安装用于开发测试，并不自动得到本项目最终发行的纯 CPU 原生库。
+正式重建须按 [纯 CPU 构建方案](docs/CPU_ONLY_BUILD_PLAN.md) 编译并安装本地
+CTranslate2 wheel，再打包；不要把包索引中的 CUDA-enabled 官方 wheel
+误当作本项目已核验的 CPU 构建。重新构建后必须重新完成发布核验。
 
 ```powershell
 python -m pip install -e ".[build,models]"
@@ -65,7 +88,15 @@ OCR 使用 PP-OCRv5 mobile 中英模型，由 RapidAI 提供 ONNX 转换版本�
 不要直接上传整个开发目录或原始便携包。先阅读 [发布与隐私说明](docs/PUBLISHING.md)，再从项目根目录生成干净源码和净化运行包：
 
 ```powershell
-python tools/prepare_public_release.py --portable dist/ScreenTranslator --output build/public-export
+python tools/prepare_public_release.py --portable dist/ScreenTranslator --output build/public-export --candidate
 ```
 
-检查通过后，只将 `build/public-export/repo/` 的内容作为仓库源码；源码压缩包和净化便携包由同一工具生成。原始日志、测试报告、用户配置、译文缓存、真实截图和 Git 历史不能混入。GitHub 账号及提交作者信息仍可能公开，第三方版权声明必须保留。应用自身尚未选定开源许可证，隐私检查也不等于再分发许可已经确认。
+检查通过后，只将 `build/public-export/repo/` 的内容作为仓库源码；源码压缩包和净化便携包由同一工具生成。原始日志、测试报告、用户配置、译文缓存、真实截图和 Git 历史不能混入。GitHub 账号及提交作者信息仍可能公开，第三方版权声明必须保留。本轮采用[同版本纯 CPU 重建](docs/CPU_BUILD_PROVENANCE.md)，不使用旧 Intel/MKL/CUDA 候选二进制；微软运行库采用正式个人 Community 许可发行路径和官方原件。实际发布及验收范围见[发布状态](docs/RELEASE_STATUS.md)，第三方证据见[核验记录](docs/THIRD_PARTY_BINARY_NOTICES.md)。导出默认是候选包，正式 `--final` 导出需要审核通过状态；导出工具不自动上传 GitHub。应用自身尚未选定开源许可证。
+
+本程序使用 LGPLv3 许可的 Qt / PySide6 / Shiboken 6.9.3。便携包的 `LICENSES/Qt/` 包含 GPL/LGPL 全文及对应源码档案。关闭程序后，可在 `_internal/PySide6/` 与 `_internal/shiboken6/` 中替换接口兼容的库；允许为调试这些库的修改而进行逆向工程。详情见随包 Qt 声明，微软保护条款不限制这些原许可权利。
+
+Shapely 使用 LGPLv2.1 的 GEOS 3.13.1 动态库。便携包的 `LICENSES/upstream/GEOS-3.13.1/` 提供对应源码与构建配方，完整许可在 `LICENSES/Shapely/`。兼容修改库可替换，允许为调试这些库的修改而进行逆向工程。
+
+本软件部分基于 [FreeType Team](https://freetype.org) 的工作，FreeType 采用 FreeType License (FTL)；Pillow 的完整第三方文本保留在 `LICENSES/Pillow/`。This software is based in part on the work of the Independent JPEG Group.
+
+ONNX Runtime 内嵌 Eigen、tqdm 和 certifi 的 MPL 对应源码、原许可和获取说明位于便携包 `LICENSES/upstream/` 的对应目录，详见 [对应源码核验](docs/COPYLEFT_SOURCE_NOTICES.md)。这些源码保持原许可权利，不受应用附加限制。

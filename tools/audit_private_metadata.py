@@ -17,7 +17,7 @@ from PyInstaller.archive.readers import CArchiveReader
 
 USER_PATH = re.compile(rb"(?:[A-Za-z]:[\\/](?:Users|Documents and Settings)[\\/][^\x00\r\n\"<>]{1,180})", re.I)
 ABS_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|/)")
-TEXT_EXTENSIONS = {".txt", ".md", ".json", ".xml", ".toml", ".ini", ".cfg", ".py", ".spec", ".ps1", ".yml", ".yaml", ".html", ".csv", ".log"}
+TEXT_EXTENSIONS = {".txt", ".md", ".json", ".xml", ".toml", ".ini", ".cfg", ".py", ".spec", ".ps1", ".yml", ".yaml", ".html", ".csv", ".log", ".rst", ".patch"}
 
 
 def path_kind(value: str) -> str | None:
