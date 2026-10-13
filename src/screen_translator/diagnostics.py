@@ -53,22 +53,22 @@ def run_self_test() -> dict:
         with no_network() as attempts:
             from .inference.ocr.rapidocr_engine import RapidOCREngine
             from .inference.translation.ctranslate2_engine import CTranslate2Engine
+            from .inference.translation.quality import evaluate_translation_quality
             ocr = RapidOCREngine(cpu_threads=2)
             translator = CTranslate2Engine(cpu_threads=2)
-            cases = [("The translation works offline.", "en-zh"),
-                     ("屏幕翻译支持离线运行。", "zh-en")]
-            for original, direction in cases:
+            cases = [("The translation works offline.", "en-zh", "offline", (("翻译",), ("离线", "脱机"))),
+                     ("屏幕翻译支持离线运行。", "zh-en", "离线", (("screen",), ("offline",))),
+                     ("STARDEW VALLEY", "en-zh", "stardew valley", (("星露谷物语",),))]
+            for original, direction, expected_ocr, word_groups in cases:
                 started = time.perf_counter()
                 recognized = ocr.recognize(text_fixture(original))
                 ocr_ms = (time.perf_counter() - started) * 1000
                 started = time.perf_counter()
                 translated = translator.translate(recognized.text, direction)
                 translation_ms = (time.perf_counter() - started) * 1000
-                valid_ocr = ("offline" in recognized.text.lower() if direction == "en-zh"
-                             else "离线" in recognized.text)
-                valid_translation = (any("\u4e00" <= c <= "\u9fff" for c in translated)
-                                     if direction == "en-zh" else
-                                     any("a" <= c.lower() <= "z" for c in translated))
+                valid_ocr = expected_ocr in recognized.text.casefold()
+                valid_translation = all(any(word.casefold() in translated.casefold() for word in alternatives)
+                                        for alternatives in word_groups)
                 report["tests"].append({"input": original, "direction": direction,
                                         "ocr": recognized.text, "translation": translated,
                                         "ocr_ms_cold_or_warm": round(ocr_ms, 1),
@@ -77,8 +77,13 @@ def run_self_test() -> dict:
                 started = time.perf_counter()
                 translator.translate(original, direction)
                 report["tests"][-1]["translation_ms_warm"] = round((time.perf_counter() - started) * 1000, 1)
+            report["translation_quality"] = evaluate_translation_quality(translator)
+            from .core.chat_diagnostics import evaluate_chat_translation
+            report["chat_translation"] = evaluate_chat_translation(ocr, translator, text_fixture)
             report["network_attempts"] = attempts.copy()
-            report["passed"] = not attempts and all(case["passed"] for case in report["tests"])
+            report["passed"] = (not attempts and all(case["passed"] for case in report["tests"])
+                                and report["translation_quality"]["passed_required_scope"]
+                                and report["chat_translation"]["passed"])
     except Exception as exc:
         logging.exception("Offline diagnostics failed")
         report["error"] = f"{type(exc).__name__}: {exc}"

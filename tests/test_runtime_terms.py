@@ -175,7 +175,7 @@ def test_cli_cannot_silently_accept_terms_for_normal_gui_startup(monkeypatch, tm
     assert not (tmp_path / "user/config.json").exists()
 
 
-@pytest.mark.parametrize("diagnostic", ["--self-test", "--smoke-test"])
+@pytest.mark.parametrize("diagnostic", ["--self-test", "--smoke-test", "--startup-self-test"])
 def test_diagnostic_without_consent_stops_before_qt_or_native_integration(monkeypatch, tmp_path, diagnostic):
     application = _prepare_main(monkeypatch, tmp_path)
     _write_terms(tmp_path)
@@ -188,6 +188,23 @@ def test_diagnostic_without_consent_stops_before_qt_or_native_integration(monkey
     assert report["failure"] == "runtime_terms_declined"
     assert report["required_runtime_terms_version"].startswith(TERMS_REVISION)
     assert not (tmp_path / "user/config.json").exists()
+
+
+def test_startup_diagnostic_records_consent_without_native_input(monkeypatch, tmp_path, qapp):
+    application = _prepare_main(monkeypatch, tmp_path)
+    _write_terms(tmp_path)
+    monkeypatch.setattr("PySide6.QtWidgets.QApplication", lambda *args: qapp)
+    monkeypatch.setattr("screen_translator.platform.windows.dpi.enable_dpi_awareness", lambda: None)
+    monkeypatch.setattr("screen_translator.ui.startup_diagnostics.run_startup_self_test", lambda: {"passed": True})
+    monkeypatch.setattr("screen_translator.platform.windows.hotkeys.WindowsHotkeys",
+                        lambda: pytest.fail("Startup diagnostic must not register global hotkeys"))
+    monkeypatch.setattr(application, "show_startup_card",
+                        lambda *args, **kwargs: pytest.fail("Do not add the normal startup presentation to diagnostics"))
+    report_path = tmp_path / "startup-report.json"
+    assert application.main(["--startup-self-test", "--accept-runtime-terms", "--report", str(report_path)]) == 0
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["runtime_terms_acceptance"] == "explicit-diagnostic"
+    assert report["passed"]
 
 
 def test_authorized_synthetic_diagnostic_records_version_without_real_inference(monkeypatch, tmp_path, qapp):

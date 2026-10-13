@@ -9,12 +9,21 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
-from screen_translator.core.text import NORMALIZATION_VERSION
+from screen_translator.core.text import LAYOUT_VERSION, NORMALIZATION_VERSION
 from screen_translator.paths import data_root
 
 
-def make_cache_key(model_id: str, direction: str, normalized_source: str) -> str:
-    value = json.dumps([NORMALIZATION_VERSION, model_id, direction, normalized_source],
+def make_cache_key(model_id: str, direction: str, normalized_source: str,
+                   *, text_layout: str = "continuous", translation_policy: str = "",
+                   model_source: str | None = None) -> str:
+    # Never reuse an old flattened translation for a structured chat input.
+    # Keep the mode in the key even for one row, which may later gain rows.
+    payload = [NORMALIZATION_VERSION, LAYOUT_VERSION, text_layout,
+               model_id, direction, normalized_source]
+    # Preserve ordinary cache keys; chat expansion is an explicit extra policy.
+    if translation_policy or model_source is not None:
+        payload.extend([translation_policy, model_source])
+    value = json.dumps(payload,
                        ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 

@@ -34,6 +34,7 @@ class MainUI(QObject):
     hide_requested = Signal()
     quit_requested = Signal()
     settings_changed = Signal(object)
+    settings_opening = Signal()
 
     def __init__(self, settings: Settings, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -47,7 +48,9 @@ class MainUI(QObject):
         self._settings_dialog: SettingsDialog | None = None
         self._was_visible_before_selection = False
         self._overlap_warning_shown = False
-        self._status = "已就绪 · Alt+R 框选区域"
+        self._native_warning_shown = False
+        self._effective_hotkeys: dict[str, str] | None = None
+        self._status = "已就绪 · Ctrl+Alt+R 框选区域"
         self._normal_icon = _tray_icon()
         self._running_icon = _tray_icon(True)
         self.tray = QSystemTrayIcon(self._normal_icon, self)
@@ -57,6 +60,9 @@ class MainUI(QObject):
         self.menu.addSeparator()
         self.select_action = self.menu.addAction("框选翻译区域")
         self.select_action.triggered.connect(self.select_region)
+        self.cancel_select_action = self.menu.addAction("取消当前框选")
+        self.cancel_select_action.setVisible(False)
+        self.cancel_select_action.triggered.connect(self.cancel_selection)
         self.toggle_action = self.menu.addAction("开启持续翻译")
         self.toggle_action.triggered.connect(self.toggle_requested.emit)
         self.clear_action = self.menu.addAction("清空翻译结果")
@@ -82,16 +88,29 @@ class MainUI(QObject):
     def is_hidden(self) -> bool:
         return self.hidden
 
+    @property
+    def is_closed(self) -> bool:
+        return self._closed
+
     def _tray_activated(self, reason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self.toggle_requested.emit()
 
     def _update_action_labels(self) -> None:
-        self.select_action.setText("框选翻译区域    " + self.settings.hotkeys.get("select", ""))
+        def binding(action: str) -> str:
+            if self._effective_hotkeys is None:
+                return self.settings.hotkeys.get(action, "")
+            return self._effective_hotkeys.get(action, "不可用 · 请在设置中修改")
+
+        self.select_action.setText("框选翻译区域    " + binding("select"))
         self.toggle_action.setText(("停止持续翻译    " if self.running else "开启持续翻译    ")
-                                  + self.settings.hotkeys.get("toggle", ""))
-        self.clear_action.setText("清空翻译结果    " + self.settings.hotkeys.get("clear", ""))
+                                  + binding("toggle"))
+        self.clear_action.setText("清空翻译结果    " + binding("clear"))
         self.hide_action.setText("临时隐藏字幕    Esc" if self.settings.esc_enabled else "临时隐藏字幕")
+
+    def set_effective_hotkeys(self, bindings: dict[str, str]) -> None:
+        self._effective_hotkeys = dict(bindings)
+        self._update_action_labels()
 
     def set_status(self, message: str, running: bool | None = None) -> None:
         self._status = str(message)
@@ -115,12 +134,20 @@ class MainUI(QObject):
 
     def _show_overlay_safely(self) -> None:
         self.overlay.show()
+        if not self.overlay.native_input_safe or (self.settings.recording_compatibility
+                                                 and not self.overlay.capture_policy_applied):
+            self.overlay.hide()
+            if not self._native_warning_shown:
+                self._native_warning_shown = True
+                self.notify("字幕暂未显示", "字幕窗口兼容设置未能应用，已安全隐藏。"
+                            "可从托盘复制译文，或退出程序后重试。", warning=True)
+            return
         if self.overlay.overlaps_capture and not self.overlay.capture_excluded:
             self.overlay.hide()
             if not self._overlap_warning_shown:
                 self._overlap_warning_shown = True
                 self.notify("字幕暂未显示", "选区没有留出字幕空间，系统也未能排除字幕截图。"
-                            "请缩小选区；当前完整译文仍可从托盘复制。", warning=True)
+                            "请只框选对白，不要框选整个屏幕；完整译文仍可从托盘复制。", warning=True)
 
     def clear_result(self) -> None:
         self._latest = None
@@ -143,19 +170,32 @@ class MainUI(QObject):
         self._was_visible_before_selection = self.overlay.isVisible()
         self.overlay.hide()
         self.selection_started.emit()
-        selector = RegionSelector(self)
-        self._selector = selector
-        selector.selected.connect(self._region_selected)
-        selector.cancelled.connect(self._selection_cancelled)
-        selector.failed.connect(lambda message: self.notify("无法读取鼠标位置", message, warning=True))
         try:
+            selector = RegionSelector(self)
+            self._selector = selector
+            selector.selected.connect(self._region_selected)
+            selector.cancelled.connect(self._selection_cancelled)
+            selector.failed.connect(lambda message: self.notify("框选已结束", message, warning=True))
+            self.cancel_select_action.setVisible(True)
+            self.select_action.setEnabled(False)
+            self.toggle_action.setEnabled(False)
             selector.show()
-        except OSError as exc:
-            selector.cancel()
+        except Exception as exc:
+            if self._selector is not None:
+                self._selector.cancel()
+            else:
+                self._selection_cancelled()
             self.notify("无法框选区域", str(exc), warning=True)
+
+    def cancel_selection(self) -> None:
+        if self._selector is not None:
+            self._selector.cancel()
 
     def _release_selector(self) -> None:
         selector, self._selector = self._selector, None
+        self.cancel_select_action.setVisible(False)
+        self.select_action.setEnabled(True)
+        self.toggle_action.setEnabled(True)
         if selector:
             selector.deleteLater()
 
@@ -163,6 +203,7 @@ class MainUI(QObject):
         self._release_selector()
         self.settings.region = region
         self._overlap_warning_shown = False
+        self._native_warning_shown = False
         self.overlay.update_settings(self.settings)
         self.clear_result()
         self.region_selected.emit(region)
@@ -176,12 +217,25 @@ class MainUI(QObject):
     def update_settings(self, settings: Settings) -> None:
         self.settings = Settings.from_dict(settings.to_dict())
         self._overlap_warning_shown = False
+        self._native_warning_shown = False
         self.overlay.update_settings(self.settings)
         self._update_action_labels()
-        if self.overlay.isVisible() and self._latest and not self.hidden:
+        # A safety check may have hidden the window while retaining the caption.
+        # Re-evaluate it after settings change; unchanged OCR text will not emit
+        # another result. Explicit hiding and selection must remain respected.
+        if (self._latest and self._latest.translation.strip() and not self.hidden
+                and self._selector is None):
             self._show_overlay_safely()
 
+    def open_settings(self) -> None:
+        self._show_settings()
+
     def _show_settings(self) -> None:
+        if self._closed:
+            return
+        self.settings_opening.emit()
+        if self._closed:
+            return
         if self._settings_dialog is not None:
             self._settings_dialog.raise_()
             self._settings_dialog.activateWindow()
@@ -195,7 +249,7 @@ class MainUI(QObject):
 
     def _settings_finished(self, dialog: SettingsDialog, result: int) -> None:
         if result == QDialog.DialogCode.Accepted:
-            self.settings_changed.emit(dialog.values())
+            self.settings_changed.emit(dialog.editable_changes())
         if self._settings_dialog is dialog:
             self._settings_dialog = None
         dialog.deleteLater()

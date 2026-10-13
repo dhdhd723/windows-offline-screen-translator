@@ -14,6 +14,34 @@ from .. import ModelFilesError, checked_path, read_manifest, verify_files
 log = logging.getLogger(__name__)
 
 
+def _same_text_row(first: TextLine, second: TextLine) -> bool:
+    """Attach small baseline fragments without guessing or rewriting glyphs."""
+    if not first.box or not second.box:
+        return False
+
+    def bounds(line):
+        xs, ys = zip(*line.box)
+        return min(xs), min(ys), max(xs), max(ys)
+
+    left = bounds(first)
+    right = bounds(second)
+    first_height, second_height = left[3] - left[1], right[3] - right[1]
+    if min(first_height, second_height) <= 0:
+        return False
+    first_center, second_center = (left[1] + left[3]) / 2, (right[1] + right[3]) / 2
+    if abs(first_center - second_center) <= max(4, min(first_height, second_height) * .45):
+        return True
+    # A dot or short fragment can sit near the bottom of the text row instead
+    # of sharing its center. Require containment and horizontal adjacency so
+    # a small independent message below/away from the row remains separate.
+    big, small = (left, right) if first_height >= second_height else (right, left)
+    big_height, small_height = big[3] - big[1], small[3] - small[1]
+    gap = max(0, big[0] - small[2], small[0] - big[2])
+    return (small_height <= big_height * .45
+            and small[1] >= big[1] - 2 and small[3] <= big[3] + 2
+            and gap <= max(4, big_height * .5))
+
+
 class RapidOCREngine:
     """PP-OCRv5 mobile via CPU ONNX Runtime, entirely from local files.
 
@@ -146,15 +174,10 @@ class RapidOCREngine:
             if not line.box:
                 rows.append([line])
                 continue
-            top = min(point[1] for point in line.box)
-            bottom = max(point[1] for point in line.box)
-            center = (top + bottom) / 2
             if rows and rows[-1][0].box:
-                previous = rows[-1][0].box
-                previous_top = min(point[1] for point in previous)
-                previous_bottom = max(point[1] for point in previous)
-                previous_center = (previous_top + previous_bottom) / 2
-                if abs(center - previous_center) <= max(4, min(bottom - top, previous_bottom - previous_top) * 0.45):
+                # A small fragment may be adjacent to the rightmost word, not
+                # the tallest box in a row containing several OCR fragments.
+                if any(_same_text_row(previous, line) for previous in rows[-1]):
                     rows[-1].append(line)
                     continue
             rows.append([line])

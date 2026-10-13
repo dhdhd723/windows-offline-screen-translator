@@ -1,13 +1,70 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFormLayout, QLabel, QLineEdit,
-                               QMessageBox, QSlider, QSpinBox, QTabWidget,
+                               QMessageBox, QPlainTextEdit, QSlider, QSpinBox, QTabWidget,
                                QVBoxLayout, QWidget)
 
 from screen_translator.contracts import Settings
+from screen_translator.core.chat_slang import BUILTIN_CHAT_SLANG, sanitize_overrides
+from screen_translator.core.chat_translation import BUILTIN_CHAT_ZH
 from screen_translator.platform.windows.hotkeys import parse_hotkey
+
+
+EDITABLE_SETTING_FIELDS = frozenset({
+    "direction", "text_layout", "font_size", "opacity", "show_source", "esc_enabled", "auto_start",
+    "cpu_threads", "capture_fps", "idle_fps", "debounce_ms", "min_ocr_interval_ms",
+    "cache_enabled", "hotkeys", "recording_compatibility",
+    "chat_slang_enabled", "chat_slang_overrides", "startup_animation",
+})
+
+
+def parse_chat_slang_overrides(text: str) -> dict[str, str]:
+    """Strict editor validation; persisted settings use tolerant sanitization."""
+    if any((ord(char) < 32 and char not in "\r\n") or ord(char) == 127 for char in text):
+        raise ValueError("聊天词表不允许制表符或控制字符")
+    entries: dict[str, str] = {}
+    for line_number, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        if "=" not in line:
+            raise ValueError(f"第 {line_number} 行格式有误，请使用 abbreviation = expansion")
+        token, expansion = line.split("=", 1)
+        clean = sanitize_overrides({token: expansion})
+        if len(clean) != 1:
+            raise ValueError(f"第 {line_number} 行无效：缩写须为 1–24 位英文字母或数字且以字母开头；"
+                             "展开内容须为 1–160 个字符的单行英文")
+        key, value = next(iter(clean.items()))
+        if key in entries:
+            raise ValueError(f"第 {line_number} 行缩写重复（大小写不区分）")
+        if len(entries) >= 100:
+            raise ValueError("自定义聊天词表最多允许 100 条")
+        entries[key] = value
+    return entries
+
+
+def merge_settings_changes(current: Settings, changes: Mapping[str, object]) -> Settings:
+    """Apply dialog edits to the latest state, never to an obsolete whole snapshot.
+
+    Region selection, overlay placement and runtime consent are application state,
+    not editable dialog fields. Unedited hotkeys keep any effective OS fallback.
+    """
+    if not isinstance(changes, Mapping) or set(changes) - EDITABLE_SETTING_FIELDS:
+        raise ValueError("设置更新包含不可编辑的字段")
+    data = current.to_dict()
+    for key, value in changes.items():
+        if key == "hotkeys":
+            if not isinstance(value, Mapping) or set(value) - set(current.hotkeys):
+                raise ValueError("快捷键更新格式无效")
+            data[key] = {**current.hotkeys, **value}
+        else:
+            data[key] = value
+    # Clamp the idle rate after merging: another editor may have changed capture_fps.
+    data["idle_fps"] = min(float(data["idle_fps"]), float(data["capture_fps"]))
+    return Settings.from_dict(data)
 
 
 class SettingsDialog(QDialog):
@@ -32,6 +89,17 @@ class SettingsDialog(QDialog):
             self.direction.addItem(text, data)
         self.direction.setCurrentIndex(max(0, self.direction.findData(settings.direction)))
         display_form.addRow("翻译方向", self.direction)
+        self.text_layout = QComboBox()
+        for text, data in (("连续文本（段落／长句）", "continuous"),
+                           ("逐行对话（聊天／Roblox）", "lines")):
+            self.text_layout.addItem(text, data)
+        self.text_layout.setCurrentIndex(max(0, self.text_layout.findData(settings.text_layout)))
+        display_form.addRow("文字排版", self.text_layout)
+        layout_hint = QLabel("两条独立对话请选择逐行对话，译文保留上下行顺序。\n"
+                             "同一句话因宽度不足自动折行时，请选连续文本以保留上下文。")
+        layout_hint.setWordWrap(True)
+        layout_hint.setStyleSheet("color: #64748b; font-size: 12px;")
+        display_form.addRow(layout_hint)
         self.font_size = QSpinBox()
         self.font_size.setRange(12, 48)
         self.font_size.setSuffix(" pt")
@@ -51,11 +119,67 @@ class SettingsDialog(QDialog):
         self.show_source = QCheckBox("在译文上方同时显示原文")
         self.show_source.setChecked(settings.show_source)
         display_form.addRow("原文", self.show_source)
+        self.recording_compatibility = QCheckBox("兼容截图和录屏（字幕可以入镜）")
+        self.recording_compatibility.setChecked(settings.recording_compatibility)
+        display_form.addRow("截图与录屏", self.recording_compatibility)
+        recording_hint = QLabel("开启后不会要求系统将字幕从截图和录屏中排除。\n字幕仍会避开 OCR 选区，避免识别到自己的译文。")
+        recording_hint.setWordWrap(True)
+        recording_hint.setStyleSheet("color: #64748b; font-size: 12px;")
+        display_form.addRow(recording_hint)
         hint = QLabel("字幕窗始终置顶、鼠标穿透，不会抢走当前程序焦点。\n框选成功后，字幕默认显示在区域外侧。")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #64748b; font-size: 12px;")
         display_form.addRow(hint)
         tabs.addTab(display, "显示与翻译")
+
+        chat = QWidget()
+        chat_layout = QVBoxLayout(chat)
+        chat_layout.setSpacing(12)
+        self.chat_slang_enabled = QCheckBox("启用聊天缩写词表")
+        self.chat_slang_enabled.setChecked(self._original.chat_slang_enabled)
+        chat_layout.addWidget(self.chat_slang_enabled)
+        chat_hint = QLabel("翻译方向为英文 → 中文时生效，开关默认启用。\n"
+                           "两种文字排版均生效；独立的内置缩写直接显示中文，长句先展开再翻译。\n"
+                           "明确的昵称冒号前缀原样保留；未知词交给模型，词义仍可能不准确。")
+        chat_hint.setWordWrap(True)
+        chat_hint.setStyleSheet("color: #64748b; font-size: 12px;")
+        chat_layout.addWidget(chat_hint)
+        examples = [key for key in ("ty", "np", "brb", "idk") if key in BUILTIN_CHAT_SLANG]
+        self.chat_slang_builtin_hint = QLabel(
+            f"已内置 {len(BUILTIN_CHAT_SLANG)} 条缩写，无需手动添加。"
+            + (f"例如：{'、'.join(examples)}。" if examples else ""))
+        self.chat_slang_builtin_hint.setWordWrap(True)
+        chat_layout.addWidget(self.chat_slang_builtin_hint)
+        glossary_tabs = QTabWidget()
+        chat_layout.addWidget(glossary_tabs)
+        builtin_page = QWidget()
+        builtin_layout = QVBoxLayout(builtin_page)
+        builtin_layout.addWidget(QLabel("内置词表随程序提供，以下内容可浏览和复制，不能直接修改。"))
+        self.chat_slang_builtin_list = QPlainTextEdit()
+        self.chat_slang_builtin_list.setReadOnly(True)
+        self.chat_slang_builtin_list.setMinimumHeight(160)
+        self.chat_slang_builtin_list.setPlainText("\n".join(
+            f"{key} = {value} | 独立消息：{BUILTIN_CHAT_ZH.get(key, '交给模型')}"
+            for key, value in sorted(BUILTIN_CHAT_SLANG.items())))
+        builtin_layout.addWidget(self.chat_slang_builtin_list)
+        glossary_tabs.addTab(builtin_page, "内置词表")
+        custom_page = QWidget()
+        custom_layout = QVBoxLayout(custom_page)
+        custom_layout.addWidget(QLabel("自定义词表（可选）：每行 abbreviation = expansion，最多 100 条"))
+        self.chat_slang_overrides = QPlainTextEdit()
+        self.chat_slang_overrides.setMinimumHeight(160)
+        self.chat_slang_overrides.setPlaceholderText("tys = thanks\nnp = no problem")
+        self.chat_slang_overrides.setPlainText("\n".join(
+            f"{key} = {value}" for key, value in sorted(self._original.chat_slang_overrides.items())))
+        custom_layout.addWidget(self.chat_slang_overrides)
+        format_hint = QLabel("缩写须以英文字母开头，仅含英文字母或数字，最长 24 位，不区分大小写。\n"
+                             "右侧填写非空单行英文（最长 160 字符）。留空仍使用内置项。\n"
+                             "自定义项可覆盖内置；移除自定义项会恢复内置含义，不能用空值删除内置。")
+        format_hint.setWordWrap(True)
+        format_hint.setStyleSheet("color: #64748b; font-size: 12px;")
+        custom_layout.addWidget(format_hint)
+        glossary_tabs.addTab(custom_page, "自定义（可选）")
+        tabs.addTab(chat, "聊天词表")
 
         controls = QWidget()
         controls_form = QFormLayout(controls)
@@ -72,6 +196,14 @@ class SettingsDialog(QDialog):
         self.auto_start = QCheckBox("登录 Windows 后自动启动到托盘")
         self.auto_start.setChecked(settings.auto_start)
         controls_form.addRow(self.auto_start)
+        self.startup_animation = QCheckBox("手动启动时显示 2 秒启动动画，结束后打开设置")
+        self.startup_animation.setChecked(self._original.startup_animation)
+        controls_form.addRow(self.startup_animation)
+        startup_hint = QLabel("动画约 2 秒，不抢焦点；正常结束后打开可编辑的设置窗口。\n"
+                              "登录 Windows 自动启动、诊断运行时不显示。")
+        startup_hint.setWordWrap(True)
+        startup_hint.setStyleSheet("color: #64748b; font-size: 12px;")
+        controls_form.addRow(startup_hint)
         hint = QLabel("Esc 会继续传递给当前程序。关闭此选项后仍可用托盘菜单隐藏字幕。\n快捷键如果被其他程序占用，保存后会显示提示。")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #64748b; font-size: 12px;")
@@ -137,17 +269,42 @@ class SettingsDialog(QDialog):
         except ValueError as exc:
             QMessageBox.warning(self, "快捷键格式有误", str(exc))
             return
+        try:
+            parse_chat_slang_overrides(self.chat_slang_overrides.toPlainText())
+        except ValueError as exc:
+            QMessageBox.warning(self, "聊天词表格式有误", str(exc))
+            return
         self.accept()
 
     def values(self) -> Settings:
         data = self._original.to_dict()
         data.update(direction=self.direction.currentData(),
+                    text_layout=self.text_layout.currentData(),
+                    chat_slang_enabled=self.chat_slang_enabled.isChecked(),
+                    chat_slang_overrides=parse_chat_slang_overrides(self.chat_slang_overrides.toPlainText()),
                     font_size=self.font_size.value(), opacity=self.opacity.value() / 100,
                     show_source=self.show_source.isChecked(), esc_enabled=self.esc.isChecked(),
+                    recording_compatibility=self.recording_compatibility.isChecked(),
                     auto_start=self.auto_start.isChecked(),
+                    startup_animation=self.startup_animation.isChecked(),
                     hotkeys={key: field.text().strip() for key, field in self.hotkeys.items()},
                     cpu_threads=self.cpu_threads.value(), capture_fps=self.capture_fps.value(),
                     idle_fps=min(self.idle_fps.value(), self.capture_fps.value()),
                     debounce_ms=self.debounce.value(), min_ocr_interval_ms=self.ocr_interval.value(),
                     cache_enabled=self.cache.isChecked())
         return Settings.from_dict(data)
+
+    def editable_changes(self) -> dict[str, object]:
+        """Return only fields the user actually changed while this dialog was open."""
+        original = self._original.to_dict()
+        edited = self.values().to_dict()
+        # values() also bounds idle_fps for its legacy whole-settings return.
+        # Do not mistake that derived clamp for a user edit; merge clamps later.
+        edited["idle_fps"] = self.idle_fps.value()
+        changes = {key: edited[key] for key in EDITABLE_SETTING_FIELDS - {"hotkeys"}
+                   if edited[key] != original[key]}
+        hotkeys = {key: value for key, value in edited["hotkeys"].items()
+                   if value != original["hotkeys"].get(key)}
+        if hotkeys:
+            changes["hotkeys"] = hotkeys
+        return changes

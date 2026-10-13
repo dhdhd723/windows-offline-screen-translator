@@ -6,11 +6,14 @@ secrets. Review the output and run audit_private_metadata.py before publishing.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import tomllib
 from typing import Callable, Iterator
 import zipfile
 
@@ -30,19 +33,61 @@ ARCHIVE_SUFFIXES = (".tar.xz", ".tar.gz", ".tgz", ".tar.bz2")
 ZIP_TIME = (2020, 1, 1, 0, 0, 0)
 
 
+def read_release_version(source: Path) -> str:
+    """Read literal project versions without importing or executing source code."""
+    source = Path(source)
+    if _linked(source) or not source.is_dir():
+        raise ValueError("Source must be an unlinked directory")
+    paths = (Path("pyproject.toml"), Path("src/screen_translator/__init__.py"))
+    for relative in paths:
+        for parent in (relative, *relative.parents):
+            if _linked(source / parent):
+                raise ValueError("Linked version declarations are not accepted")
+        if not (source / relative).is_file():
+            raise ValueError("Source is missing a required version declaration")
+    try:
+        project_version = tomllib.loads((source / paths[0]).read_text(encoding="utf-8-sig"))[
+            "project"]["version"]
+        tree = ast.parse((source / paths[1]).read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, SyntaxError, KeyError, TypeError, tomllib.TOMLDecodeError) as exc:
+        raise ValueError("Cannot parse source version declarations") from exc
+    values = []
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else (
+            [node.target] if isinstance(node, ast.AnnAssign) else [])
+        if any(isinstance(target, ast.Name) and target.id == "__version__" for target in targets):
+            if not isinstance(node.value, ast.Constant) or not isinstance(node.value.value, str):
+                raise ValueError("Application __version__ must be a literal string")
+            values.append(node.value.value)
+    if len(values) != 1:
+        raise ValueError("Application must have exactly one __version__ declaration")
+    if not isinstance(project_version, str) or not re.fullmatch(
+            r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", project_version):
+        raise ValueError("Release version must be a safe numeric X.Y.Z string")
+    if project_version != values[0]:
+        raise ValueError("pyproject and application versions do not match")
+    return project_version
+
+
 def require_final_release_approval(source: Path) -> None:
     """Require a manually reviewed status before naming an export as final.
 
     This is an accidental-publication guard, not an automated legal review.
     Update the status only after the documented release checks are complete.
     """
+    version = read_release_version(source)
     status = Path(source) / "docs" / "RELEASE_STATUS.md"
     if not status.is_file() or _linked(status):
         raise ValueError("Final release requires a reviewed docs/RELEASE_STATUS.md")
-    markers = [line.strip() for line in status.read_text(encoding="utf-8-sig").splitlines()
+    lines = status.read_text(encoding="utf-8-sig").splitlines()
+    markers = [line.strip() for line in lines
                if line.strip().startswith("<!-- release-status:")]
     if markers != ["<!-- release-status: approved -->"]:
         raise ValueError("Release review is incomplete; export a candidate instead")
+    version_markers = [line.strip() for line in lines
+                       if line.strip().startswith("<!-- release-version:")]
+    if version_markers != [f"<!-- release-version: {version} -->"]:
+        raise ValueError("Release approval does not match this source version")
 
 
 def _linked(path: Path) -> bool:
@@ -175,6 +220,18 @@ def sha256(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def _rewrite_document_links(text: str, targets: dict[str, str]) -> str:
+    """Move only exact local inline targets known to exist in the public export.
+
+    Literal boundaries avoid rewriting external URLs, traversal paths or a
+    similarly prefixed filename. Keep optional heading fragments unchanged.
+    """
+    for original, replacement in targets.items():
+        text = text.replace(f"]({original})", f"]({replacement})")
+        text = text.replace(f"]({original}#", f"]({replacement}#")
+    return text
+
+
 def export_portable(portable: Path, repo: Path, destination: Path,
                     supplemental_notices: Path | None = None) -> dict:
     portable = Path(portable)
@@ -209,10 +266,23 @@ def export_portable(portable: Path, repo: Path, destination: Path,
     else:
         counts["reviewed_notice_files"] = 0
     counts["source_files"] = _copy_files(Path(repo), destination / "source", _source_file)
+    # Derive navigation from files that survived the existing source allowlist,
+    # not a hard-coded list which goes stale whenever a new release note is added.
+    docs_root = destination / "source" / "docs"
+    included_docs = ([item.relative_to(docs_root).as_posix()
+                      for item in _files(docs_root) if item.suffix == ".md"]
+                     if docs_root.is_dir() else [])
+    readme_targets = {prefix + name: "source/docs/" + name
+                      for name in included_docs for prefix in ("docs/", "./docs/")}
+    doc_targets = {prefix + name: "source/docs/" + name
+                   for name in included_docs for prefix in ("", "./")}
+    if (destination / "source" / "README.md").is_file():
+        doc_targets["../README.md"] = "source/README.md"
     for name, relative in (("README.md", "README.md"), ("使用说明.md", "docs/使用说明.md"),
                            ("技术方案.md", "docs/技术方案.md"),
                            ("项目说明报告.md", "docs/项目说明报告.md"),
-                           ("发布许可状态.md", "docs/RELEASE_STATUS.md")):
+                           ("发布许可状态.md", "docs/RELEASE_STATUS.md"),
+                           ("0.1.1验收说明.md", "docs/0.1.1验收说明.md")):
         # Old bundle documents may contain machine-specific acceptance notes.
         # Only reuse the reviewed source documentation, never old package docs.
         original = Path(repo) / relative
@@ -222,14 +292,9 @@ def export_portable(portable: Path, repo: Path, destination: Path,
             raise ValueError("Refusing linked documentation")
         text = original.read_text(encoding="utf-8-sig")
         if relative == "README.md":
-            text = text.replace("](docs/", "](source/docs/")
+            text = _rewrite_document_links(text, readme_targets)
         elif relative.startswith("docs/"):
-            text = text.replace("](../README.md)", "](source/README.md)")
-            for doc_name in ("THIRD_PARTY_BINARY_NOTICES.md", "CPU_ONLY_BUILD_PLAN.md",
-                             "COPYLEFT_SOURCE_NOTICES.md", "MICROSOFT_RUNTIME_TERMS.md",
-                             "CPU_BUILD_PROVENANCE.md", "RELEASE_STATUS.md", "PUBLISHING.md",
-                             "技术方案.md", "使用说明.md", "项目说明报告.md"):
-                text = text.replace(f"]({doc_name})", f"](source/docs/{doc_name})")
+            text = _rewrite_document_links(text, doc_targets)
         (destination / name).write_text(text, encoding="utf-8")
     (destination / "发布隐私说明.md").write_text(
         "# 公开运行包的隐私边界\n\n"
@@ -275,6 +340,10 @@ def main() -> None:
     channel.add_argument("--final", action="store_true",
                          help="Export a final release only after the documented review is approved")
     args = parser.parse_args()
+    try:
+        version = read_release_version(args.source)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.final:
         try:
             require_final_release_approval(args.source)
@@ -287,9 +356,10 @@ def main() -> None:
                "portable": export_portable(args.portable, repo, portable,
                                            args.source / "packaging" / "extra-notices")}
     results["release_channel"] = "final" if args.final else "candidate"
-    portable_name = ("ScreenTranslator-0.1.0-Windows-x64.zip" if args.final
-                     else "ScreenTranslator-0.1.0-Windows-x64-candidate.zip")
-    for root, name in ((repo, "ScreenTranslator-0.1.0-source.zip"),
+    results["source_version"] = version
+    portable_name = (f"ScreenTranslator-{version}-Windows-x64.zip" if args.final
+                     else f"ScreenTranslator-{version}-Windows-x64-candidate.zip")
+    for root, name in ((repo, f"ScreenTranslator-{version}-source.zip"),
                        (portable, portable_name)):
         target = args.output / name
         zip_directory(root, target)

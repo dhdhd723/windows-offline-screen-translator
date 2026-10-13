@@ -62,6 +62,8 @@ def main() -> int:
     user32.GetWindowRect.restype = wintypes.BOOL
     user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     user32.PostMessageW.restype = wintypes.BOOL
+    user32.GetWindowDisplayAffinity.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowDisplayAffinity.restype = wintypes.BOOL
     get_style = user32.GetWindowLongPtrW
     get_style.argtypes = [wintypes.HWND, ctypes.c_int]
     get_style.restype = ctypes.c_ssize_t
@@ -78,6 +80,12 @@ def main() -> int:
         for _ in range(6):
             app.processEvents()
             time.sleep(0.05)
+
+    def affinity(window):
+        value = wintypes.DWORD()
+        if not user32.GetWindowDisplayAffinity(int(window.winId()), ctypes.byref(value)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return value.value
 
     try:
         report["font_family"] = QFontInfo(QFont("Microsoft YaHei UI", 30)).family()
@@ -121,12 +129,40 @@ def main() -> int:
             style = get_style(int(overlay.winId()), -20)
             required = 0x08000000 | 0x00080000 | 0x00000080 | 0x00000020 | 0x00000008
             report["overlay_native_styles_ok"] = (style & required) == required
-            report["capture_exclusion_api_succeeded"] = overlay.capture_excluded
-            # Move our own overlay onto our own caption for one exclusion test.
+            report["default_capture_affinity"] = affinity(overlay)
+            report["default_recording_policy_ok"] = (
+                overlay.capture_policy_applied and not overlay.capture_excluded
+                and report["default_capture_affinity"] == 0)
+            # Move our own overlay onto our own caption. The recording-compatible
+            # default must allow the subtitle to appear in this own-window crop.
             overlay.move(caption.pos())
             settle()
             recognized = ocr.recognize(backend.grab(region)).text
+            report["default_overlay_visible_in_mss"] = "悬浮" in recognized
+            # Exclusion remains an explicitly selected option, not the default.
+            overlay.update_settings(Settings(region=region, show_source=False,
+                                             recording_compatibility=False))
+            overlay.move(caption.pos())
+            settle()
+            report["optional_capture_affinity"] = affinity(overlay)
+            report["optional_exclusion_policy_ok"] = (
+                overlay.capture_policy_applied and overlay.capture_excluded
+                and report["optional_capture_affinity"] == 0x11)
+            recognized = ocr.recognize(backend.grab(region)).text
             report["overlay_excluded_from_mss"] = "离线" in recognized and "悬浮" not in recognized
+            overlay.hide()
+            settle()
+            report["hidden_capture_affinity"] = affinity(overlay)
+            report["hidden_policy_cleared"] = report["hidden_capture_affinity"] == 0
+            overlay.set_result(TranslationResult("new caption", "后台新字幕测试", "en-zh", 1))
+            overlay.update_settings(Settings(region=region, show_source=False,
+                                             recording_compatibility=False))
+            settle()
+            report["hidden_background_updates_stay_safe"] = (
+                affinity(overlay) == 0 and not overlay.isVisible()
+                and not overlay._topmost_timer.isActive())
+            report["nvidia_recording_tested"] = False
+            report["exclusive_fullscreen_game_tested"] = False
             report["network_attempts"] = attempts.copy()
         actions = []
         hotkeys.action.connect(actions.append)
@@ -145,7 +181,10 @@ def main() -> int:
             and report["overlay_did_not_take_focus"] and report["overlay_native_styles_ok"]
             and report["native_hotkey_message_routing_ok"]
             and report["all_hotkey_actions_registered"] and not report["hotkey_errors"]
-            and report["capture_exclusion_api_succeeded"] and report["overlay_excluded_from_mss"]
+            and report["default_recording_policy_ok"] and report["default_overlay_visible_in_mss"]
+            and report["optional_exclusion_policy_ok"] and report["overlay_excluded_from_mss"]
+            and report["hidden_policy_cleared"]
+            and report["hidden_background_updates_stay_safe"]
             and not report["network_attempts"])
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"

@@ -10,6 +10,9 @@ import zipfile
 import pytest
 
 
+TEST_VERSION = "0.1.1"
+
+
 def _load_exporter():
     path = Path(__file__).resolve().parents[1] / "tools" / "prepare_public_release.py"
     spec = importlib.util.spec_from_file_location("public_release_tool", path)
@@ -49,6 +52,7 @@ def _files(root: Path) -> set[str]:
 def _repository(root: Path) -> set[str]:
     accepted = {
         "README.md", ".gitignore", "pyproject.toml", "requirements-lock.txt", "launcher.py",
+        "src/screen_translator/__init__.py",
         "src/example/__init__.py", "src/example/main.py", "tests/test_app.py",
         "tools/example.py", "docs/PUBLISHING.md", "docs/guide.md",
         "packaging/ScreenTranslator.spec", "packaging/app.manifest",
@@ -61,6 +65,8 @@ def _repository(root: Path) -> set[str]:
     }
     for name in accepted:
         _write(root, name, b"icon" if name.endswith(".ico") else "synthetic public source\n")
+    _write(root, "pyproject.toml", f'[project]\nname = "synthetic-translator"\nversion = "{TEST_VERSION}"\n')
+    _write(root, "src/screen_translator/__init__.py", f'__version__ = "{TEST_VERSION}"\n')
     return accepted
 
 
@@ -177,6 +183,78 @@ def test_portable_readme_links_target_included_source_docs(exporter, tmp_path):
     assert (destination / "source/docs/PUBLISHING.md").is_file()
 
 
+@pytest.mark.parametrize("relative, exported, prefix", [
+    ("README.md", "README.md", "docs/"),
+    ("docs/RELEASE_STATUS.md", "发布许可状态.md", ""),
+    ("docs/项目说明报告.md", "项目说明报告.md", ""),
+])
+def test_portable_navigation_uses_all_included_docs_not_fixed_names(
+        exporter, tmp_path, relative, exported, prefix):
+    portable = tmp_path / "portable"
+    _portable(portable)
+    repo = tmp_path / "repo"
+    _repository(repo)
+    names = ("0.1.1-R2变更说明.md", "0.1.1-R3变更说明.md", "游戏兼容说明.md",
+             "future/新版本说明.md")
+    for name in names:
+        _write(repo, "docs/" + name, "synthetic included public document\n")
+    text = "\n".join(
+        link
+        for name in names
+        for link in (f"[Document]({prefix}{name})",
+                     f"[Heading](./{prefix}{name}#测试边界)")
+    ) + "\n"
+    _write(repo, relative, text)
+    destination = tmp_path / "release"
+    exporter.export_portable(portable, repo, destination)
+    exported_text = (destination / exported).read_text(encoding="utf-8")
+    for name in names:
+        assert f"[Document](source/docs/{name})" in exported_text
+        assert f"[Heading](source/docs/{name}#测试边界)" in exported_text
+        assert (destination / "source/docs" / name).is_file()
+    # The embedded source remains byte-identical and keeps repository links.
+    assert (destination / "source" / relative).read_text(encoding="utf-8") == text
+    assert (repo / relative).read_text(encoding="utf-8") == text
+
+
+@pytest.mark.parametrize("relative, exported, prefix", [
+    ("README.md", "README.md", "docs/"),
+    ("docs/RELEASE_STATUS.md", "发布许可状态.md", ""),
+])
+def test_portable_navigation_leaves_external_missing_and_private_targets_unchanged(
+        exporter, tmp_path, relative, exported, prefix):
+    portable = tmp_path / "portable"
+    _portable(portable)
+    repo = tmp_path / "repo"
+    _repository(repo)
+    name = "游戏兼容说明.md"
+    _write(repo, "docs/" + name, "synthetic public document\n")
+    _write(repo, "docs/logs/private.md", "SYNTHETIC_EXCLUDED_NAVIGATION_MARKER\n")
+    _write(repo, "docs/private.json", "SYNTHETIC_EXCLUDED_NAVIGATION_MARKER\n")
+    unchanged_targets = (
+        f"https://example.org/{prefix}{name}",
+        f"http://example.org/{prefix}{name}#heading",
+        f"//example.org/{prefix}{name}",
+        f"/{prefix}{name}", f"../{prefix}{name}",
+        f"{prefix}{name}.bak", f"{prefix}missing.md",
+        f"{prefix}logs/private.md", f"{prefix}private.json",
+        f"source/docs/{name}", "#local-heading",
+    )
+    text = "\n".join(f"[Unchanged]({target})" for target in unchanged_targets) + "\n"
+    text += f"[Included]({prefix}{name})\n"
+    _write(repo, relative, text)
+    destination = tmp_path / "release"
+    exporter.export_portable(portable, repo, destination)
+    exported_text = (destination / exported).read_text(encoding="utf-8")
+    for target in unchanged_targets:
+        assert f"[Unchanged]({target})" in exported_text
+    assert f"[Included](source/docs/{name})" in exported_text
+    assert not (destination / "source/docs/logs/private.md").exists()
+    assert not (destination / "source/docs/private.json").exists()
+    assert not any(b"SYNTHETIC_EXCLUDED_NAVIGATION_MARKER" in path.read_bytes()
+                   for path in destination.rglob("*") if path.is_file())
+
+
 def test_portable_keeps_supplemental_library_source_but_excludes_wheels(exporter, tmp_path):
     portable = tmp_path / "portable"
     _portable(portable)
@@ -211,7 +289,7 @@ def test_repository_preserves_upstream_patches_but_not_source_archives(exporter,
 ])
 def test_final_release_requires_one_explicit_reviewed_approval(exporter, tmp_path, text):
     source = tmp_path / "project"
-    source.mkdir()
+    _repository(source)
     if text is not None:
         _write(source, "docs/RELEASE_STATUS.md", text)
     with pytest.raises(ValueError):
@@ -220,7 +298,9 @@ def test_final_release_requires_one_explicit_reviewed_approval(exporter, tmp_pat
 
 def test_final_release_accepts_explicit_approval_marker(exporter, tmp_path):
     source = tmp_path / "project"
-    _write(source, "docs/RELEASE_STATUS.md", "# Status\n\n<!-- release-status: approved -->\n")
+    _repository(source)
+    _write(source, "docs/RELEASE_STATUS.md",
+           f"# Status\n\n<!-- release-status: approved -->\n<!-- release-version: {TEST_VERSION} -->\n")
     exporter.require_final_release_approval(source)
 
 
@@ -234,9 +314,11 @@ def test_cli_defaults_to_candidate_and_labels_manifest(exporter, tmp_path, monke
     monkeypatch.setattr(sys, "argv", ["prepare_public_release.py", "--source", str(source),
                                     "--portable", str(portable), "--output", str(output), *flags])
     exporter.main()
-    assert (output / "ScreenTranslator-0.1.0-Windows-x64-candidate.zip").is_file()
-    assert not (output / "ScreenTranslator-0.1.0-Windows-x64.zip").exists()
+    assert (output / f"ScreenTranslator-{TEST_VERSION}-Windows-x64-candidate.zip").is_file()
+    assert (output / f"ScreenTranslator-{TEST_VERSION}-source.zip").is_file()
+    assert not (output / f"ScreenTranslator-{TEST_VERSION}-Windows-x64.zip").exists()
     assert '"release_channel": "candidate"' in (output / "EXPORT_MANIFEST.json").read_text()
+    assert f'"source_version": "{TEST_VERSION}"' in (output / "EXPORT_MANIFEST.json").read_text()
     capsys.readouterr()
 
 
@@ -258,14 +340,15 @@ def test_cli_refuses_final_before_creating_any_output(exporter, tmp_path, monkey
 def test_cli_final_export_requires_flag_and_approval(exporter, tmp_path, monkeypatch, capsys):
     source = tmp_path / "project"
     _repository(source)
-    _write(source, "docs/RELEASE_STATUS.md", "<!-- release-status: approved -->\n")
+    _write(source, "docs/RELEASE_STATUS.md",
+           f"<!-- release-status: approved -->\n<!-- release-version: {TEST_VERSION} -->\n")
     portable = tmp_path / "portable"
     _portable(portable)
     output = tmp_path / "export"
     monkeypatch.setattr(sys, "argv", ["prepare_public_release.py", "--source", str(source),
                                     "--portable", str(portable), "--output", str(output), "--final"])
     exporter.main()
-    assert (output / "ScreenTranslator-0.1.0-Windows-x64.zip").is_file()
+    assert (output / f"ScreenTranslator-{TEST_VERSION}-Windows-x64.zip").is_file()
     assert '"release_channel": "final"' in (output / "EXPORT_MANIFEST.json").read_text()
     capsys.readouterr()
 
@@ -283,11 +366,93 @@ def test_cli_candidate_and_final_are_mutually_exclusive(exporter, tmp_path, monk
 
 def test_final_release_rejects_linked_status(exporter, tmp_path, monkeypatch):
     source = tmp_path / "project"
+    _repository(source)
     status = _write(source, "docs/RELEASE_STATUS.md", "<!-- release-status: approved -->\n")
     original = exporter._linked
     monkeypatch.setattr(exporter, "_linked", lambda path: Path(path) == status or original(path))
     with pytest.raises(ValueError):
         exporter.require_final_release_approval(source)
+
+
+@pytest.mark.parametrize("marker", [
+    "", "<!-- release-version: 0.1.0 -->\n",
+    "<!-- release-version: 0.1.1 -->\n<!-- release-version: 0.1.1 -->\n",
+])
+def test_final_approval_is_bound_to_one_matching_version(exporter, tmp_path, marker):
+    source = tmp_path / "project"
+    _repository(source)
+    _write(source, "docs/RELEASE_STATUS.md", "<!-- release-status: approved -->\n" + marker)
+    with pytest.raises(ValueError, match="does not match"):
+        exporter.require_final_release_approval(source)
+
+
+def test_cli_uses_source_version_not_tool_version(exporter, tmp_path, monkeypatch, capsys):
+    source = tmp_path / "project"
+    _repository(source)
+    _write(source, "pyproject.toml", '[project]\nversion = "2.4.6"\n')
+    _write(source, "src/screen_translator/__init__.py", '__version__ = "2.4.6"\n')
+    portable = tmp_path / "portable"
+    _portable(portable)
+    output = tmp_path / "export"
+    monkeypatch.setattr(sys, "argv", ["prepare_public_release.py", "--source", str(source),
+                                    "--portable", str(portable), "--output", str(output), "--candidate"])
+    exporter.main()
+    assert (output / "ScreenTranslator-2.4.6-Windows-x64-candidate.zip").is_file()
+    assert (output / "ScreenTranslator-2.4.6-source.zip").is_file()
+    assert not list(output.glob("ScreenTranslator-0.1.0-*.zip"))
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize("app_source", [
+    '__version__ = "0.1.0"\n',
+    '__version__ = "0.1." + "1"\n',
+    '__version__ = "0.1.1"\n__version__ = "0.1.1"\n',
+    'def get_version():\n    return "0.1.1"\n',
+])
+def test_cli_refuses_invalid_source_version_before_output(exporter, tmp_path, monkeypatch, capsys, app_source):
+    source = tmp_path / "project"
+    _repository(source)
+    _write(source, "src/screen_translator/__init__.py", app_source)
+    output = tmp_path / "export"
+    monkeypatch.setattr(sys, "argv", ["prepare_public_release.py", "--source", str(source),
+                                    "--portable", str(tmp_path / "missing-portable"), "--output", str(output)])
+    with pytest.raises(SystemExit) as exc:
+        exporter.main()
+    assert exc.value.code == 2
+    assert not output.exists()
+    capsys.readouterr()
+
+
+def test_version_reader_never_executes_source(exporter, tmp_path):
+    source = tmp_path / "project"
+    _repository(source)
+    marker = tmp_path / "source-executed.txt"
+    _write(source, "src/screen_translator/__init__.py",
+           f'from pathlib import Path\nPath({str(marker)!r}).write_text("executed")\n'
+           f'__version__ = "{TEST_VERSION}"\nraise RuntimeError("must not execute")\n')
+    assert exporter.read_release_version(source) == TEST_VERSION
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("version", ["../0.1.1", "0.1.1/unsafe", "01.1.1", "0.1", "0.1.1\nunsafe", 11])
+def test_version_reader_rejects_unsafe_asset_versions(exporter, tmp_path, version):
+    source = tmp_path / "project"
+    _repository(source)
+    # TOML literal escaping is sufficient for synthetic test values only.
+    import json
+    _write(source, "pyproject.toml", f"[project]\nversion = {json.dumps(version)}\n")
+    with pytest.raises(ValueError):
+        exporter.read_release_version(source)
+
+
+def test_version_reader_rejects_linked_version_declaration(exporter, tmp_path, monkeypatch):
+    source = tmp_path / "project"
+    _repository(source)
+    declaration = source / "src/screen_translator/__init__.py"
+    original = exporter._linked
+    monkeypatch.setattr(exporter, "_linked", lambda path: Path(path) == declaration or original(path))
+    with pytest.raises(ValueError, match="Linked version"):
+        exporter.read_release_version(source)
 
 
 def test_portable_status_links_target_included_source_docs(exporter, tmp_path):

@@ -1,7 +1,9 @@
 import numpy as np
+import pytest
 
 from screen_translator.capture.change_detector import changed, fingerprint
-from screen_translator.core.text import choose_direction, is_meaningful_change, normalize_text
+from screen_translator.core.text import (choose_direction, is_meaningful_change,
+                                        normalize_text, semantic_signature)
 
 
 def test_normalize_unicode_and_ocr_line_breaks():
@@ -27,6 +29,30 @@ def test_spacing_punctuation_and_exact_duplicates_do_not_translate_again():
 def test_long_near_match_requests_confirmation_in_pipeline():
     assert not is_meaningful_change("The quick brown fox jumps over the lazy dog.",
                                     "The quick brown fox jumps over the lazy dogs.")
+
+
+@pytest.mark.parametrize("old,new", [
+    ("Balance is 100 dollars", "Balance is -100 dollars"),
+    ("Temperature is -10 degrees", "Temperature is +10 degrees"),
+    ("Continue when A < B", "Continue when A > B"),
+    ("Price is $100 today", "Price is €100 today"),
+    ("Available amount is 10", "Available amount is 10%"),
+    ("The ratio is 10%", "The ratio is 10‰"),
+    ("Compare x = y now", "Compare x ≠ y now"),
+])
+def test_semantic_symbols_are_always_meaningful(old, new):
+    assert semantic_signature(old) != semantic_signature(new)
+    assert is_meaningful_change(old, new)
+
+
+@pytest.mark.parametrize("old,new", [
+    ("Hello, world!", '“Hello world.”'),
+    ("Hello: world...", "Hello; world?"),
+    ("Price is ＄１００％", "Price is $100%"),
+])
+def test_known_typography_still_deduplicates(old, new):
+    assert semantic_signature(old) == semantic_signature(new)
+    assert not is_meaningful_change(old, new)
 
 
 def test_direction_handles_short_mixed_and_nonlanguage_content():

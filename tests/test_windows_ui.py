@@ -26,8 +26,8 @@ def qapp():
 
 @pytest.fixture
 def ui(qapp, monkeypatch):
-    monkeypatch.setattr("screen_translator.ui.subtitle_overlay.apply_overlay_styles", lambda hwnd: None)
-    monkeypatch.setattr("screen_translator.ui.subtitle_overlay.exclude_from_capture", lambda hwnd: False)
+    monkeypatch.setattr("screen_translator.ui.subtitle_overlay.apply_overlay_styles", lambda hwnd: True)
+    monkeypatch.setattr("screen_translator.ui.subtitle_overlay.set_capture_exclusion", lambda hwnd, enabled: True)
     value = MainUI(Settings())
     yield value
     value.close()
@@ -46,6 +46,36 @@ def test_coordinate_mapping_uses_monitor_origin_not_absolute_scale():
     assert mapping.qt_to_physical(qt_point.x(), qt_point.y()) == (-1770, -150)
     assert mapping.physical_rect_to_qt(monitor.bounds) == QRect(-2560, -200, 1280, 800)
     assert mapping.qt_rect_to_physical(QRect(-2460, -100, 200, 80)) == (-1770, -150, -1470, -30)
+
+
+def test_public_open_settings_creates_one_editable_dialog_and_reuses_it(ui):
+    openings = []
+    ui.settings_opening.connect(lambda: openings.append(True))
+    assert not ui.is_closed
+    ui.open_settings()
+    dialog = ui._settings_dialog
+    assert isinstance(dialog, SettingsDialog) and dialog.isVisible()
+    assert not (dialog.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus)
+    assert not (dialog.windowFlags() & Qt.WindowType.WindowTransparentForInput)
+    dialog.font_size.setValue(23)
+    ui.open_settings()
+    assert ui._settings_dialog is dialog and dialog.font_size.value() == 23
+    assert len(openings) == 2
+
+
+def test_public_open_settings_after_shutdown_is_ignored(ui):
+    ui.close()
+    assert ui.is_closed
+    openings = []
+    ui.settings_opening.connect(lambda: openings.append(True))
+    ui.open_settings()
+    assert ui._settings_dialog is None and openings == []
+
+
+def test_settings_opening_handler_can_shutdown_without_creating_a_dialog(ui):
+    ui.settings_opening.connect(ui.close)
+    ui.open_settings()
+    assert ui.is_closed and ui._settings_dialog is None
 
 
 def test_region_topology_validation(monkeypatch):
@@ -84,7 +114,11 @@ class _FakeUser32:
         return 0
 
 
-def test_default_alt_r_registers_unchanged_when_available(qapp):
+def _legacy_settings() -> Settings:
+    return Settings(hotkeys={**Settings().hotkeys, "select": "Alt+R"})
+
+
+def test_default_select_avoids_nvidia_alt_r_and_alt_shift_r(qapp):
     hotkeys = WindowsHotkeys()
     fake = _FakeUser32()
     hotkeys._user32 = fake
@@ -93,8 +127,8 @@ def test_default_alt_r_registers_unchanged_when_available(qapp):
     hotkeys.binding_changed.connect(lambda action, key: changed.append((action, key)))
     hotkeys.error.connect(errors.append)
     hotkeys.update(Settings())
-    assert hotkeys.effective_hotkeys["select"] == "Alt+R"
-    assert fake.calls[0][1] == parse_hotkey("Alt+R")
+    assert hotkeys.effective_hotkeys["select"] == "Ctrl+Alt+R"
+    assert fake.calls[0][1] == parse_hotkey("Ctrl+Alt+R")
     assert not changed and not errors
     hotkeys.close()
 
@@ -107,42 +141,42 @@ def test_occupied_default_alt_r_uses_first_available_fallback(qapp):
     errors = []
     hotkeys.binding_changed.connect(lambda action, key: changed.append((action, key)))
     hotkeys.error.connect(errors.append)
-    hotkeys.update(Settings())
-    assert [call[1] for call in fake.calls[:2]] == [parse_hotkey("Alt+R"), parse_hotkey("Alt+Shift+R")]
-    assert hotkeys.effective_hotkeys["select"] == "Alt+Shift+R"
-    assert changed == [("select", "Alt+Shift+R")]
+    hotkeys.update(_legacy_settings())
+    assert [call[1] for call in fake.calls[:2]] == [parse_hotkey("Alt+R"), parse_hotkey("Ctrl+Alt+R")]
+    assert hotkeys.effective_hotkeys["select"] == "Ctrl+Alt+R"
+    assert changed == [("select", "Ctrl+Alt+R")]
     assert not errors
     hotkeys.close()
 
 
 def test_fallback_preserves_another_explicit_shortcut(qapp):
-    settings = Settings()
-    settings.hotkeys["toggle"] = "Alt+Shift+R"
+    settings = _legacy_settings()
+    settings.hotkeys["toggle"] = "Ctrl+Alt+R"
     hotkeys = WindowsHotkeys()
     fake = _FakeUser32({parse_hotkey("Alt+R")})
     hotkeys._user32 = fake
     changed = []
     hotkeys.binding_changed.connect(lambda action, key: changed.append((action, key)))
     hotkeys.update(settings)
-    assert hotkeys.effective_hotkeys["select"] == "Ctrl+Alt+R"
-    assert hotkeys.effective_hotkeys["toggle"] == "Alt+Shift+R"
-    assert (0xB100, parse_hotkey("Alt+Shift+R")) not in fake.calls
-    assert changed == [("select", "Ctrl+Alt+R")]
+    assert hotkeys.effective_hotkeys["select"] == "Ctrl+Shift+R"
+    assert hotkeys.effective_hotkeys["toggle"] == "Ctrl+Alt+R"
+    assert (0xB100, parse_hotkey("Ctrl+Alt+R")) not in fake.calls
+    assert changed == [("select", "Ctrl+Shift+R")]
     hotkeys.close()
 
 
 def test_second_fallback_when_first_is_also_occupied(qapp):
-    blocked = {parse_hotkey("Alt+R"), parse_hotkey("Alt+Shift+R")}
+    blocked = {parse_hotkey("Alt+R"), parse_hotkey("Ctrl+Alt+R")}
     hotkeys = WindowsHotkeys()
     fake = _FakeUser32(blocked)
     hotkeys._user32 = fake
     changed = []
     hotkeys.binding_changed.connect(lambda action, key: changed.append((action, key)))
-    hotkeys.update(Settings())
-    assert hotkeys.effective_hotkeys["select"] == "Ctrl+Alt+R"
-    assert changed == [("select", "Ctrl+Alt+R")]
+    hotkeys.update(_legacy_settings())
+    assert hotkeys.effective_hotkeys["select"] == "Ctrl+Shift+R"
+    assert changed == [("select", "Ctrl+Shift+R")]
     assert [call[1] for call in fake.calls[:3]] == [parse_hotkey(key) for key in
-                                                   ("Alt+R", "Alt+Shift+R", "Ctrl+Alt+R")]
+                                                   ("Alt+R", "Ctrl+Alt+R", "Ctrl+Shift+R")]
     hotkeys.close()
 
 
@@ -165,17 +199,17 @@ def test_custom_shortcut_failure_does_not_fallback(qapp):
 
 
 def test_default_select_errors_only_after_all_fallbacks_fail(qapp):
-    blocked = {parse_hotkey(key) for key in ("Alt+R", "Alt+Shift+R", "Ctrl+Alt+R")}
+    blocked = {parse_hotkey(key) for key in ("Alt+R", "Ctrl+Alt+R", "Ctrl+Shift+R")}
     hotkeys = WindowsHotkeys()
     fake = _FakeUser32(blocked)
     hotkeys._user32 = fake
     errors = []
     hotkeys.error.connect(errors.append)
-    hotkeys.update(Settings())
+    hotkeys.update(_legacy_settings())
     assert "select" not in hotkeys.effective_hotkeys
-    assert len(errors) == 1 and "Ctrl+Alt+R" in errors[0]
+    assert len(errors) == 1 and "Ctrl+Shift+R" in errors[0]
     assert [call[1] for call in fake.calls[:3]] == [parse_hotkey(key) for key in
-                                                   ("Alt+R", "Alt+Shift+R", "Ctrl+Alt+R")]
+                                                   ("Alt+R", "Ctrl+Alt+R", "Ctrl+Shift+R")]
     hotkeys.close()
 
 
@@ -212,6 +246,35 @@ def test_long_result_has_visible_truncation_but_copy_remains_complete(ui, qapp):
     assert ui.overlay.translation_label.text().endswith("…〔已截断〕")
     assert len(ui.overlay.translation_label.text()) < len(text)
     assert ui.overlay.height() <= 560
+    ui._copy_translation()
+    assert qapp.clipboard().text() == text
+
+
+def test_dialogue_rows_render_and_copy_with_hard_line_breaks(ui, qapp):
+    ui.update_settings(Settings(text_layout="lines", show_source=True))
+    result = TranslationResult("Where are you?\nCome here.", "你在哪里?\n过来。", "en-zh", 1)
+    ui.show_result(result)
+    qapp.processEvents()
+    assert ui.overlay.source_label.text() == result.source
+    assert ui.overlay.translation_label.text() == result.translation
+    assert ui.overlay.translation_label.text().splitlines() == ["你在哪里?", "过来。"]
+    assert ui.overlay.translation_label.wordWrap()
+    ui._copy_translation()
+    assert qapp.clipboard().text() == result.translation
+    ui.clear_result()
+    assert not ui.overlay.translation_label.text()
+    assert not ui.copy_action.isEnabled()
+
+
+def test_many_dialogue_rows_mark_truncation_but_copy_all_rows(ui, qapp):
+    ui.update_settings(Settings(text_layout="lines"))
+    text = "\n".join(f"Dialogue message {index}." for index in range(150))
+    ui.show_result(TranslationResult("source", text, "zh-en", 1))
+    qapp.processEvents()
+    shown = ui.overlay.translation_label.text()
+    assert shown.endswith("…〔已截断〕")
+    assert "\n" in shown
+    assert len(shown) < len(text)
     ui._copy_translation()
     assert qapp.clipboard().text() == text
 

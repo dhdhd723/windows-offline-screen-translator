@@ -138,7 +138,7 @@ class WindowsHotkeys(QObject):
                 if action != "select" or "".join(value.split()).casefold() != "alt+r":
                     raise ValueError("已被其他程序占用或系统不允许")
                 fallback = None
-                for candidate in ("Alt+Shift+R", "Ctrl+Alt+R"):
+                for candidate in ("Ctrl+Alt+R", "Ctrl+Shift+R"):
                     alternate = parse_hotkey(candidate)
                     if alternate in taken or alternate in reserved_for_others:
                         continue
@@ -146,7 +146,7 @@ class WindowsHotkeys(QObject):
                         fallback = (candidate, alternate)
                         break
                 if fallback is None:
-                    raise ValueError("已被占用；Alt+Shift+R 和 Ctrl+Alt+R 也不可用")
+                    raise ValueError("已被占用；Ctrl+Alt+R 和 Ctrl+Shift+R 也不可用")
                 effective, alternate = fallback
                 self._registered[hotkey_id] = action
                 self._effective_hotkeys[action] = effective

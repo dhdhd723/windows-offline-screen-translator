@@ -62,18 +62,27 @@ def enumerate_monitors() -> list[Monitor]:
                                           callback_type, wintypes.LPARAM]
     user32.EnumDisplayMonitors.restype = wintypes.BOOL
     result: list[Monitor] = []
+    monitor_info_error: int | None = None
 
     @callback_type
     def collect(handle, dc, rect, data):
+        nonlocal monitor_info_error
         info = _MONITORINFOEXW()
         info.cbSize = ctypes.sizeof(info)
         if user32.GetMonitorInfoW(handle, ctypes.byref(info)):
             result.append(Monitor(str(info.szDevice), _rect(info.rcMonitor),
                                   _rect(info.rcWork), bool(info.dwFlags & 1)))
+        else:
+            # Raising inside a ctypes callback cannot propagate reliably.
+            # Reject a partial snapshot after enumeration instead: a missing
+            # record is not proof that the user's selected display disappeared.
+            monitor_info_error = ctypes.get_last_error()
         return True
 
     if not user32.EnumDisplayMonitors(None, None, collect, 0):
         raise OSError(ctypes.get_last_error(), "无法读取显示器信息")
+    if monitor_info_error is not None:
+        raise OSError(monitor_info_error, "显示器信息暂不完整，等待恢复")
     return result
 
 
@@ -93,11 +102,22 @@ def monitor_for_region(region: Region, monitors: list[Monitor] | None = None) ->
     return None
 
 
-def validate_region(region: Region | None) -> bool:
-    """Reject changed monitor layout rather than silently capture a different area."""
+def region_availability(region: Region | None) -> bool | None:
+    """True for valid, False for invalid, None for a temporarily unreadable desktop.
+
+    Only a complete, non-empty monitor snapshot can confirm a layout change.
+    Callers monitoring an active session must not turn an unavailable desktop
+    into a permanent stop, or the capture worker cannot recover after sleep.
+    """
     if region is None or not region.valid():
         return False
-    monitor = monitor_for_region(region)
+    try:
+        items = enumerate_monitors()
+    except OSError:
+        return None
+    if not items:
+        return None
+    monitor = monitor_for_region(region, items)
     if monitor is None:
         return False
     if region.monitor_id and region.monitor_id.casefold() != monitor.id.casefold():
@@ -105,6 +125,11 @@ def validate_region(region: Region | None) -> bool:
     if region.monitor_bounds and tuple(region.monitor_bounds) != monitor.bounds:
         return False
     return True
+
+
+def validate_region(region: Region | None) -> bool:
+    """Boolean compatibility check; unavailable desktops are not valid for starting."""
+    return region_availability(region) is True
 
 
 def cursor_position() -> tuple[int, int]:

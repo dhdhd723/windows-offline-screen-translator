@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, Qt
+from PySide6.QtCore import QRect, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from screen_translator.contracts import Settings, TranslationResult
-from screen_translator.platform.windows.window_styles import apply_overlay_styles, exclude_from_capture
+from screen_translator.platform.windows.window_styles import apply_overlay_styles, set_capture_exclusion
 from screen_translator.ui.display_coordinates import screen_mappings
 
 
@@ -14,9 +14,15 @@ class SubtitleOverlay(QWidget):
         super().__init__()
         self.settings = Settings.from_dict(settings.to_dict())
         self.capture_excluded = False
+        self.capture_policy_applied = False
+        self.native_input_safe = False
         self.overlaps_capture = False
         self.physical_bounds: tuple[int, int, int, int] | None = None
         self._native_hwnd: int | None = None
+        self._applied_exclusion: bool | None = None
+        self._topmost_timer = QTimer(self)
+        self._topmost_timer.setInterval(1000)
+        self._topmost_timer.timeout.connect(self._apply_native)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool
                             | Qt.WindowType.WindowStaysOnTopHint
                             | Qt.WindowType.WindowDoesNotAcceptFocus
@@ -51,13 +57,38 @@ class SubtitleOverlay(QWidget):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._apply_native()
+        if self.isVisible() and self.native_input_safe:
+            self._topmost_timer.start()
+
+    def hideEvent(self, event) -> None:
+        self._topmost_timer.stop()
+        if self._native_hwnd is not None:
+            set_capture_exclusion(self._native_hwnd, False)
+        self.capture_excluded = False
+        self._applied_exclusion = None
+        super().hideEvent(event)
 
     def _apply_native(self) -> None:
+        # New background results/settings must not reapply exclusion or
+        # topmost to an Esc-hidden subtitle window. showEvent restores it.
+        if not self.isVisible():
+            return
         hwnd = int(self.winId())
         if hwnd != self._native_hwnd:
-            apply_overlay_styles(hwnd)
-            self.capture_excluded = exclude_from_capture(hwnd)
             self._native_hwnd = hwnd
+            self._applied_exclusion = None
+        # Reassert topmost without activation after a borderless game changes
+        # its own z-order. This does not promise exclusive-fullscreen support.
+        self.native_input_safe = apply_overlay_styles(hwnd)
+        requested = not self.settings.recording_compatibility
+        if requested != self._applied_exclusion:
+            self.capture_policy_applied = set_capture_exclusion(hwnd, requested)
+            self.capture_excluded = requested and self.capture_policy_applied
+            if self.capture_policy_applied:
+                self._applied_exclusion = requested
+        if not self.native_input_safe or (self.settings.recording_compatibility
+                                         and not self.capture_policy_applied):
+            self.hide()
 
     def update_settings(self, settings: Settings) -> None:
         self.settings = Settings.from_dict(settings.to_dict())
@@ -65,6 +96,9 @@ class SubtitleOverlay(QWidget):
         self.source_label.setFont(QFont("Microsoft YaHei UI", max(10, self.settings.font_size - 7)))
         self.source_label.setVisible(self.settings.show_source and bool(self.source_label.text()))
         self.reposition()
+        self._applied_exclusion = None
+        if self.isVisible():
+            self._apply_native()
         self.update()
 
     def set_result(self, result: TranslationResult) -> None:
@@ -172,5 +206,5 @@ class SubtitleOverlay(QWidget):
                                      and top < region.y + region.height and bottom > region.y)
         else:
             self.overlaps_capture = False
-        if self._native_hwnd is not None:
+        if self._native_hwnd is not None and self.isVisible():
             self._apply_native()

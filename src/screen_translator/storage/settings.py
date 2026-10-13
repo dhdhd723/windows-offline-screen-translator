@@ -34,7 +34,7 @@ class SettingsStore:
                 defaults = Settings().hotkeys
                 settings.hotkeys = {key: str(settings.hotkeys.get(key, value))
                                     for key, value in defaults.items()}
-                for key in ("show_source", "esc_enabled", "cache_enabled", "auto_start"):
+                for key in ("show_source", "esc_enabled", "cache_enabled", "auto_start", "startup_animation"):
                     if not isinstance(getattr(settings, key), bool):
                         raise ValueError(f"Invalid boolean setting: {key}")
                 if (not isinstance(settings.runtime_terms_version, str)

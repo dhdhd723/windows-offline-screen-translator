@@ -9,10 +9,15 @@ from typing import Callable
 import numpy as np
 
 from screen_translator.capture.change_detector import changed, fingerprint
-from screen_translator.capture.mss_backend import MSSCaptureBackend
+from screen_translator.capture.mss_backend import (InvalidCaptureRegionError,
+                                                  MSSCaptureBackend,
+                                                  is_transient_capture_error)
 from screen_translator.contracts import OCRResult, Region, Settings, TranslationResult
-from screen_translator.core.text import (choose_direction, is_meaningful_change,
-                                        normalize_text, semantic_signature)
+from screen_translator.core.chat_translation import (chat_direction_source, chat_source_layout,
+    chat_translation_fingerprint, prepare_chat_translation)
+from screen_translator.core.text import (choose_direction, is_meaningful_layout_change,
+                                        layout_semantic_signature, normalize_layout_text)
+from screen_translator.inference import InferenceCancelled, PermanentInferenceError
 from screen_translator.storage.translation_cache import make_cache_key
 
 _LOG = logging.getLogger(__name__)
@@ -23,6 +28,7 @@ class _Frame:
     image: np.ndarray
     generation: int
     captured_at: float
+    recognized: OCRResult | None = None
 
 
 class Pipeline:
@@ -34,6 +40,10 @@ class Pipeline:
     grab(Region) -> BGR ndarray and optional close(). Native inference calls
     always run on the single inference worker.
     """
+
+    CAPTURE_RETRY_DELAYS = (0.15, 0.30, 0.60)
+    CAPTURE_SLOW_RETRY_SECONDS = 5.0
+    CAPTURE_FAILURE_LOG_INTERVAL_SECONDS = 30.0
 
     def __init__(self, settings: Settings, ocr_engine, translator_engine, cache,
                  on_result: Callable[[TranslationResult], None],
@@ -51,6 +61,7 @@ class Pipeline:
         self._generation = 0
         self._session = 0
         self._running = False
+        self._capture_state = "stopped"
         self._closed = False
         self._region: Region | None = None
         self._capture_stop: threading.Event | None = None
@@ -59,6 +70,10 @@ class Pipeline:
         self._boxes: tuple[tuple[int, int, int, int], ...] = ()
         self._boxes_epoch = 0
         self._boxes_anchor = None
+        self._trusted_text = ""
+        self._trusted_boxes: tuple[tuple[int, int, int, int], ...] = ()
+        self._trusted_pixels = None
+        self._trusted_shape: tuple[int, ...] | None = None
         self._last_observed = ""
         self._last_output = ""
         self._candidate_text = ""
@@ -73,6 +88,8 @@ class Pipeline:
         self._retry_not_before = 0.0
         self._error_count = 0
         self._last_error_status = 0.0
+        self._permanent_error = False
+        self._no_text_notified = False
         self._cache.set_persistence(self._settings.cache_enabled)
         self._inference_thread = threading.Thread(target=self._inference_loop,
                                                   name="Translator-Inference", daemon=True)
@@ -82,6 +99,12 @@ class Pipeline:
     def is_running(self) -> bool:
         with self._lock:
             return self._running
+
+    @property
+    def capture_state(self) -> str:
+        """Capture health, separate from the user's continuing monitor intent."""
+        with self._lock:
+            return self._capture_state
 
     @property
     def generation(self) -> int:
@@ -106,6 +129,7 @@ class Pipeline:
             session = self._session
             self._region = region
             self._running = True
+            self._capture_state = "capturing"
             self._pending = None
             self._last_observed = ""
             self._candidate_text = ""
@@ -115,22 +139,30 @@ class Pipeline:
             self._suppress_next = False
             self._boxes = ()
             self._boxes_anchor = None
+            self._trusted_text = ""
+            self._trusted_boxes = ()
+            self._trusted_pixels = None
+            self._trusted_shape = None
             self._boxes_epoch += 1
             self._force_epoch += 1
             self._retry_not_before = 0.0
+            self._permanent_error = False
+            self._no_text_notified = False
             stop_event = threading.Event()
             self._capture_stop = stop_event
             thread = threading.Thread(target=self._capture_loop,
                                       args=(region, session, stop_event),
                                       name=f"Translator-Capture-{session}", daemon=True)
             self._capture_threads.add(thread)
+            # Publish before the new worker can report a capture failure.
+            self._status("持续翻译已开启")
             thread.start()
-        self._status("持续翻译已开启")
 
     def stop(self) -> None:
         with self._condition:
             was_running = self._running
             self._running = False
+            self._capture_state = "stopped"
             self._generation += 1
             self._session += 1
             self._pending = None
@@ -161,9 +193,23 @@ class Pipeline:
         new_settings = Settings.from_dict(settings.to_dict())
         with self._condition:
             old_settings = self._settings
-            restart = self._running and old_settings.direction != new_settings.direction
+            restart = self._running and (old_settings.direction != new_settings.direction
+                                         or old_settings.text_layout != new_settings.text_layout
+                                         or old_settings.chat_slang_enabled != new_settings.chat_slang_enabled
+                                         or old_settings.chat_slang_overrides != new_settings.chat_slang_overrides)
             region = self._region
+            if restart:
+                # Invalidate in-flight OCR/translation before applying a new
+                # layout policy or touching potentially slower disk-cache IO.
+                self.stop()
             self._settings = new_settings
+            if self._permanent_error and old_settings != new_settings:
+                # A known invalid source/model must not spin on a static frame.
+                # An explicit settings change is a safe user-controlled retry.
+                self._permanent_error = False
+                self._last_observed = ""
+                self._retry_not_before = 0.0
+                self._force_epoch += 1
             if old_settings.cpu_threads != new_settings.cpu_threads:
                 self._configuration_requested = True
                 self._condition.notify()
@@ -193,6 +239,21 @@ class Pipeline:
         except Exception:
             _LOG.exception("Status callback failed")
 
+    def _capture_status(self, session: int, stop_event: threading.Event,
+                        message: str, state: str) -> bool:
+        """Serialize capture state/messages with stop and replacement sessions.
+
+        As with result delivery, callbacks must enqueue a UI signal, not block
+        waiting for another thread to stop this session.
+        """
+        with self._condition:
+            if (self._closed or not self._running or session != self._session
+                    or stop_event.is_set()):
+                return False
+            self._capture_state = state
+            self._status(message)
+            return True
+
     def _deliver_locked(self, result: TranslationResult) -> None:
         # Serialize publication with clear/stop. The GUI must additionally
         # check generation when a queued signal reaches its event loop.
@@ -213,8 +274,10 @@ class Pipeline:
         last_changed = stable_since
         last_submit = 0.0
         last_probe = 0.0
+        recovery_attempts = 0
+        last_failure_log = float("-inf")
+        logged_failure_traceback = False
         try:
-            backend = self._capture_factory()
             while not stop_event.is_set():
                 now = time.monotonic()
                 with self._lock:
@@ -226,11 +289,95 @@ class Pipeline:
                     force_epoch = self._force_epoch
                     generation = self._generation
                     retry_not_before = self._retry_not_before
-                frame = np.ascontiguousarray(backend.grab(region), dtype=np.uint8)
-                if frame.ndim != 3 or frame.shape[2] < 3:
+                try:
+                    if backend is None:
+                        backend = self._capture_factory()
+                    captured = backend.grab(region)
+                except Exception as exc:
+                    if not is_transient_capture_error(exc):
+                        raise
+                    old_backend, backend = backend, None
+                    with self._condition:
+                        current = (not self._closed and self._running and session == self._session
+                                   and not stop_event.is_set())
+                        if current:
+                            self._capture_state = "recovering"
+                            # Reobserve after a mode switch, like a new capture
+                            # session. Preserve clear's explicit suppression,
+                            # but discard stale pending/accepted pixel evidence
+                            # before potentially slow native cleanup.
+                            self._generation += 1
+                            self._pending = None
+                            self._last_observed = self._suppressed_text or ""
+                            self._candidate_text = ""
+                            self._candidate_count = 0
+                            self._blank_count = 0
+                            self._boxes = ()
+                            self._boxes_anchor = None
+                            self._trusted_text = ""
+                            self._trusted_boxes = ()
+                            self._trusted_pixels = None
+                            self._trusted_shape = None
+                            self._boxes_epoch += 1
+                            self._force_epoch += 1
+                            self._condition.notify_all()
+                    if old_backend is not None and callable(getattr(old_backend, "close", None)):
+                        old_backend.close()
+                    if not current:
+                        break
+                    recovery_attempts += 1
+                    failure_time = time.monotonic()
+                    if (failure_time - last_failure_log
+                            >= self.CAPTURE_FAILURE_LOG_INTERVAL_SECONDS):
+                        _LOG.warning("Transient screen acquisition failure (%s); "
+                                     "automatic recovery attempt %d",
+                                     type(exc).__name__, recovery_attempts,
+                                     exc_info=not logged_failure_traceback)
+                        last_failure_log = failure_time
+                        logged_failure_traceback = True
+                    if recovery_attempts == 1:
+                        if not self._capture_status(session, stop_event,
+                                                    "屏幕捕获暂时中断，正在自动重试…",
+                                                    "recovering"):
+                            break
+                    if recovery_attempts <= len(self.CAPTURE_RETRY_DELAYS):
+                        recovery_delay = self.CAPTURE_RETRY_DELAYS[recovery_attempts - 1]
+                    else:
+                        recovery_delay = self.CAPTURE_SLOW_RETRY_SECONDS
+                        if recovery_attempts == len(self.CAPTURE_RETRY_DELAYS) + 1:
+                            message = ("屏幕捕获暂时不可用，正在等待恢复"
+                                       f"（每 {recovery_delay:g} 秒自动重试）；Alt+T 可停止。")
+                            if not self._capture_status(session, stop_event, message,
+                                                        "recovering"):
+                                break
+                    # Wait is cancellable: stop/shutdown never creates another
+                    # backend after entering this mode-switch backoff.
+                    if stop_event.wait(recovery_delay):
+                        break
+                    anchor_full = anchor_focus = previous = previous_full = None
+                    local_boxes_epoch = -1
+                    seen_force = -1
+                    candidate_since = None
+                    stable_since = raw_stable_since = full_raw_stable_since = time.monotonic()
+                    last_changed = stable_since
+                    last_submit = last_probe = 0.0
+                    continue
+                frame = np.ascontiguousarray(captured, dtype=np.uint8)
+                if (frame.ndim != 3 or frame.shape[2] < 3
+                        or frame.shape[:2] != (region.height, region.width)):
                     raise ValueError("Screen capture returned an invalid BGR frame")
                 if frame.shape[2] > 3:
                     frame = frame[:, :, :3].copy()
+                with self._lock:
+                    if (self._closed or not self._running or session != self._session
+                            or stop_event.is_set()):
+                        break
+                if recovery_attempts:
+                    recovery_attempts = 0
+                    if not self._capture_status(session, stop_event,
+                                                "屏幕捕获已恢复，持续监控中",
+                                                "capturing"):
+                        break
                 full = fingerprint(frame)
                 focus = fingerprint(frame, boxes) if boxes else full
                 if boxes_epoch != local_boxes_epoch:
@@ -292,15 +439,22 @@ class Pipeline:
                 fps = settings.idle_fps if now - last_changed > 5.0 else settings.capture_fps
                 stop_event.wait(max(0.01, 1.0 / fps - (time.monotonic() - now)))
         except Exception as exc:
-            _LOG.exception("Capture failed")
             with self._condition:
-                current = session == self._session and not self._closed
+                current = (session == self._session and not self._closed
+                           and self._running and not stop_event.is_set())
                 if current:
+                    _LOG.exception("Capture failed")
                     self._running = False
+                    self._capture_state = "stopped"
                     self._generation += 1
                     self._pending = None
-            if current:
-                self._status(f"屏幕捕获失败：{exc}")
+                    stop_event.set()
+                    if self._capture_stop is stop_event:
+                        self._capture_stop = None
+                    message = ("屏幕选区已失效，已停止监控；请重新框选。"
+                               if isinstance(exc, InvalidCaptureRegionError) else
+                               "屏幕捕获失败，已停止监控；请检查选区或显示模式后重新开启。")
+                    self._status(message)
         finally:
             if backend is not None and callable(getattr(backend, "close", None)):
                 try:
@@ -337,6 +491,20 @@ class Pipeline:
                     if self._current_locked(frame.generation):
                         self._error_count = 0
                         self._retry_not_before = 0.0
+            except InferenceCancelled:
+                # Stop/clear or a newer OCR-confirmed source superseded this
+                # task. No error, forced recapture or retry backoff is needed.
+                pass
+            except PermanentInferenceError as exc:
+                _LOG.warning("Local inference paused: %s", exc)
+                with self._lock:
+                    current = self._current_locked(frame.generation)
+                    if current:
+                        self._permanent_error = True
+                        self._retry_not_before = 0.0
+                        self._error_count = 0
+                if current:
+                    self._status(f"本地识别或翻译暂不可用：{exc} 等待区域文字或设置变化后重试。")
             except Exception as exc:
                 _LOG.exception("Local inference failed")
                 now = time.monotonic()
@@ -384,7 +552,8 @@ class Pipeline:
             _LOG.exception("Inference thread configuration failed")
             self._status(f"推理线程设置失败：{exc}")
 
-    def _set_boxes_locked(self, result: OCRResult, image: np.ndarray) -> None:
+    @staticmethod
+    def _ocr_boxes(result: OCRResult, image: np.ndarray) -> tuple[tuple[int, int, int, int], ...]:
         height, width = image.shape[:2]
         boxes = []
         for line in result.lines:
@@ -395,11 +564,147 @@ class Pipeline:
                    min(width - 1, int(max(xs)) + 8), min(height - 1, int(max(ys)) + 6))
             if box[2] > box[0] and box[3] > box[1]:
                 boxes.append(box)
-        value = tuple(boxes)
+        return tuple(boxes)
+
+    def _set_boxes_locked(self, result: OCRResult, image: np.ndarray) -> None:
+        value = self._ocr_boxes(result, image)
         if value != self._boxes:
             self._boxes = value
             self._boxes_anchor = fingerprint(image, value)
             self._boxes_epoch += 1
+
+    def _accept_observation_locked(self, text: str, result: OCRResult, image: np.ndarray) -> None:
+        """Keep text boxes/pixel evidence only for an accepted OCR baseline.
+
+        A stable baseline must not learn new boxes from a rejected near-match
+        or a transient blank. Repeated identical text with identical text pixels
+        also keeps its established geometry instead of learning detector jitter.
+        Only fingerprints/crop digests are retained, not another full ROI image.
+        """
+        if (text and text == self._trusted_text and self._trusted_boxes
+                and self._trusted_shape == image.shape and self._trusted_pixels is not None
+                and fingerprint(image, self._trusted_boxes).digest == self._trusted_pixels.digest):
+            return
+        self._set_boxes_locked(result, image)
+        self._trusted_text = text
+        self._trusted_boxes = self._boxes if text else ()
+        self._trusted_shape = image.shape if self._trusted_boxes else None
+        self._trusted_pixels = fingerprint(image, self._trusted_boxes) if self._trusted_boxes else None
+
+    def _normalize_observation(self, text: str) -> str:
+        return normalize_layout_text(text, self._observation_layout(text))
+
+    def _observation_layout(self, text: str) -> str:
+        active = (self._settings.chat_slang_enabled
+                  and choose_direction(chat_direction_source(text, self._settings.text_layout),
+                                       self._settings.direction) == "en-zh")
+        return chat_source_layout(text, self._settings.text_layout, enabled=active)
+
+    def _semantic_signature(self, text: str) -> tuple[tuple[str, ...], ...]:
+        return layout_semantic_signature(text, self._observation_layout(text))
+
+    def _is_meaningful_change(self, previous: str, current: str) -> bool:
+        layout = ("lines" if "lines" in (self._observation_layout(previous),
+                                        self._observation_layout(current)) else "continuous")
+        return is_meaningful_layout_change(previous, current, layout)
+
+    def _unchanged_pixels_noise_locked(self, reference: str, result: OCRResult,
+                                       image: np.ndarray, baseline: _Frame | None = None) -> bool:
+        """Reject only near/blank OCR drift contradicted by unchanged text pixels.
+
+        Full-region probes remain enabled. New boxes outside the accepted text
+        geometry, actual pixel edits, and meaningful changes take the original
+        path. An in-flight frame's recognized text may provide provisional
+        evidence before its observation has been committed to the baseline.
+        """
+        candidate = self._normalize_observation(result.text)
+        if (not reference or candidate == reference
+                or (candidate and self._is_meaningful_change(reference, candidate))):
+            return False
+        if self._trusted_text == reference and self._trusted_boxes and self._trusted_pixels is not None:
+            boxes, pixels, shape = self._trusted_boxes, self._trusted_pixels, self._trusted_shape
+        elif (baseline is not None and baseline.recognized is not None
+              and self._normalize_observation(baseline.recognized.text) == reference):
+            boxes = self._ocr_boxes(baseline.recognized, baseline.image)
+            if not boxes:
+                return False
+            pixels, shape = fingerprint(baseline.image, boxes), baseline.image.shape
+        else:
+            return False
+        if image.shape != shape:
+            return False
+        if candidate:
+            if not result.lines:
+                return False
+            for line in result.lines:
+                if not line.box:
+                    return False
+                xs, ys = zip(*line.box)
+                if not any(left <= min(xs) and min(ys) >= top
+                           and max(xs) <= right and max(ys) <= bottom
+                           for left, top, right, bottom in boxes):
+                    return False
+        return fingerprint(image, boxes).digest == pixels.digest
+
+    def _reset_text_candidate_locked(self) -> None:
+        self._candidate_text = ""
+        self._candidate_count = 0
+
+    def _newer_text_pending(self, frame: _Frame, text: str) -> bool:
+        """Verify one newer debounced candidate on the inference worker.
+
+        Pixel animation alone never cancels translation. Near matches need a
+        second matching OCR, just like the ordinary text noise gate. Retain the
+        verified result in the one-slot mailbox so it need not be recognized
+        again. Native calls themselves remain non-interruptible.
+        """
+        with self._lock:
+            if not self._current_locked(frame.generation):
+                return True
+            pending = self._pending
+            if (pending is None or pending.generation != frame.generation
+                    or pending.captured_at <= frame.captured_at):
+                return False
+            self._pending = None
+            preceding_stage = self._inflight_stage
+            self._inflight_stage = "ocr"
+        result = pending.recognized or self._ocr.recognize(pending.image)
+        latest = self._normalize_observation(result.text)
+        with self._condition:
+            if not self._current_locked(frame.generation):
+                return True
+            if self._unchanged_pixels_noise_locked(text, result, pending.image, frame):
+                self._inflight_stage = preceding_stage
+                self._reset_text_candidate_locked()
+                self._blank_count = 0
+                return False
+        meaningful = self._is_meaningful_change(text, latest)
+        different = self._semantic_signature(text) != self._semantic_signature(latest)
+        if different and (not meaningful or not latest):
+            # A single near-match or blank OCR can be noise. This candidate
+            # has already passed capture debounce; confirm its text once more.
+            confirmation = self._ocr.recognize(pending.image)
+            confirmed = self._normalize_observation(confirmation.text) == latest
+            result = confirmation
+            latest = self._normalize_observation(confirmation.text)
+            meaningful = confirmed
+            different = self._semantic_signature(text) != self._semantic_signature(latest)
+        with self._condition:
+            if not self._current_locked(frame.generation):
+                return True
+            self._inflight_stage = preceding_stage
+            if self._unchanged_pixels_noise_locked(text, result, pending.image, frame):
+                self._reset_text_candidate_locked()
+                self._blank_count = 0
+                return False
+            # Keep an unconfirmed different candidate for the normal gate too;
+            # consuming it would lose a small edit after the image anchor moved.
+            if meaningful or different:
+                verified = _Frame(pending.image, pending.generation, pending.captured_at, result)
+                if self._pending is None or self._pending.captured_at < verified.captured_at:
+                    self._pending = verified
+                    self._condition.notify()
+            return meaningful
 
     def _process_frame(self, frame: _Frame) -> None:
         started = time.monotonic()
@@ -407,37 +712,58 @@ class Pipeline:
             if not self._current_locked(frame.generation):
                 return
             self._inflight_stage = "ocr"
-        result: OCRResult = self._ocr.recognize(frame.image)
-        text = normalize_text(result.text)
+        result: OCRResult = frame.recognized or self._ocr.recognize(frame.image)
+        text = self._normalize_observation(result.text)
+        frame = _Frame(frame.image, frame.generation, frame.captured_at, result)
         with self._lock:
             if not self._current_locked(frame.generation):
                 return
-            self._set_boxes_locked(result, frame.image)
+            if self._unchanged_pixels_noise_locked(self._last_observed, result, frame.image):
+                self._reset_text_candidate_locked()
+                self._blank_count = 0
+                return
             if self._suppress_next:
                 self._suppress_next = False
                 self._suppressed_text = text
                 self._last_observed = text
+                self._accept_observation_locked(text, result, frame.image)
+                return
+        if self._newer_text_pending(frame, text):
+            return
+        with self._lock:
+            if not self._current_locked(frame.generation):
                 return
             if not text:
+                self._reset_text_candidate_locked()
                 self._blank_count += 1
                 if self._blank_count < 2:
                     self._force_epoch += 1
                     return
                 self._last_observed = ""
+                self._permanent_error = False
                 self._suppressed_text = None
                 self._candidate_text = ""
+                self._accept_observation_locked("", result, frame.image)
+                if not self._no_text_notified:
+                    self._no_text_notified = True
+                    self._status("当前区域未识别到文字：请只框选清晰对白；全屏游戏可尝试无边框或窗口模式。")
                 if self._last_output:
                     self._last_output = ""
                     self._deliver_locked(TranslationResult("", "", "", frame.generation))
                 return
             self._blank_count = 0
+            self._no_text_notified = False
             previous = self._last_observed
             if text == previous:
+                self._reset_text_candidate_locked()
+                self._accept_observation_locked(text, result, frame.image)
                 return
-            meaningful = is_meaningful_change(previous, text)
+            meaningful = self._is_meaningful_change(previous, text)
             if not meaningful:
-                if semantic_signature(previous) == semantic_signature(text):
+                if self._semantic_signature(previous) == self._semantic_signature(text):
+                    self._reset_text_candidate_locked()
                     self._last_observed = text
+                    self._accept_observation_locked(text, result, frame.image)
                     return
                 if text == self._candidate_text:
                     self._candidate_count += 1
@@ -450,28 +776,63 @@ class Pipeline:
             self._candidate_count = 0
             self._suppressed_text = None
             self._last_observed = text
-            direction = choose_direction(text, self._settings.direction)
+            self._accept_observation_locked(text, result, frame.image)
+            direction_source = (chat_direction_source(text, self._settings.text_layout)
+                                if self._settings.chat_slang_enabled else text)
+            direction = choose_direction(direction_source, self._settings.direction)
+            text_layout = self._settings.text_layout
             if direction is None:
                 self._last_output = ""
+                self._permanent_error = False
                 self._deliver_locked(TranslationResult(text, "", "", frame.generation))
                 return
+            # Preserve source/identity independently of the model. The default
+            # paragraph layout must not silently disable an enabled chat policy.
+            model_text, translation_policy, chat_plan = text, "", None
+            if direction == "en-zh" and self._settings.chat_slang_enabled:
+                chat_plan = prepare_chat_translation(text, text_layout,
+                                                     self._settings.chat_slang_overrides)
+                model_text = chat_plan.cache_source
+                translation_policy = chat_translation_fingerprint(self._settings.chat_slang_overrides)
             self._inflight_stage = "translation"
         try:
-            cache_key = make_cache_key(self._translator.model_id(direction), direction, text)
+            cache_key = make_cache_key(self._translator.model_id(direction), direction, text,
+                                      text_layout=text_layout,
+                                      translation_policy=translation_policy,
+                                      model_source=model_text if translation_policy else None)
             translation = self._cache.get(cache_key)
             cache_hit = translation is not None
             if translation is None:
-                translation = self._translator.translate(text, direction)
+                cancel_check = lambda: self._newer_text_pending(frame, text)
+                if chat_plan is not None:
+                    translation = chat_plan.translate(self._translator, direction, cancel_check)
+                else:
+                    cancellable = getattr(self._translator, "translate_cancellable", None)
+                    if callable(cancellable):
+                        translation = cancellable(model_text, direction, cancel_check)
+                    else:
+                        translation = self._translator.translate(model_text, direction)
             if not translation or not translation.strip():
                 raise RuntimeError("本地模型返回空译文")
+            if self._newer_text_pending(frame, text):
+                with self._lock:
+                    if self._current_locked(frame.generation):
+                        self._last_observed = previous
+                return
             with self._lock:
                 if not self._current_locked(frame.generation):
                     return
                 if not cache_hit:
                     self._cache.put(cache_key, translation)
                 self._last_output = translation
+                self._permanent_error = False
                 self._deliver_locked(TranslationResult(text, translation, direction, frame.generation,
                                                        (time.monotonic() - started) * 1000.0, cache_hit))
+                self._status("译文已更新，持续监控中")
+        except PermanentInferenceError:
+            # Preserve the invalid input baseline. The same stable source will
+            # neither retranslate nor force another OCR just to fail again.
+            raise
         except Exception:
             with self._lock:
                 if self._current_locked(frame.generation):

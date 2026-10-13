@@ -5,6 +5,10 @@ captures this process's CaptionWindow client area and posts WM_HOTKEY to a
 window whose PID is the frozen executable spawned below. It never synthesizes
 physical keyboard input or targets an unrelated process. Run with desktop
 access after building dist/ScreenTranslator/ScreenTranslator.exe.
+
+The default remains a two-stage, single-line acceptance. ``--text-layout lines``
+adds controlled two-row dialogue and row-boundary changes; this is not a Roblox
+or other real-game compatibility test.
 """
 
 from __future__ import annotations
@@ -12,6 +16,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 from ctypes import wintypes
+from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
@@ -23,6 +28,71 @@ import time
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+
+@dataclass(frozen=True)
+class CaptionStage:
+    name: str
+    caption: str
+    direction: str
+    expected_words: tuple[str, ...] = ()
+    # Per row: all token groups must match, but each group allows alternatives.
+    # This permits e.g. 火车 / 列车 without accepting meaning from the other row.
+    line_word_groups: tuple[tuple[tuple[str, ...], ...], ...] | None = None
+    stable_first_line_from: str | None = None
+    same_flattened_source_as_previous: bool = False
+
+
+def _caption_stages(text_layout: str, *, chat_slang_samples: bool = False) -> tuple[CaptionStage, ...]:
+    if text_layout == "continuous":
+        if chat_slang_samples:
+            raise ValueError("Chat slang samples require lines layout")
+        return (
+            CaptionStage("english", "The translation works offline.", "en-zh", ("翻译", "离线")),
+            CaptionStage("chinese", "屏幕翻译支持离线运行。", "zh-en", ("screen", "offline")),
+        )
+    if text_layout != "lines":
+        raise ValueError("Unknown caption text layout")
+    stages = (
+        CaptionStage("english-two-rows",
+                     "The translation works offline.\nThe train is at the station.", "en-zh",
+                     line_word_groups=((("翻译",), ("离线",)),
+                                       (("火车", "列车"), ("车站", "站台")))),
+        CaptionStage("chinese-two-rows",
+                     "屏幕翻译支持离线运行。\n火车已经到站了", "zh-en",
+                     line_word_groups=((("screen",), ("offline",)), (("train",),))),
+        CaptionStage("chinese-second-row-updated",
+                     "屏幕翻译支持离线运行。\n火车将在10分钟后离开", "zh-en",
+                     line_word_groups=((("screen",), ("offline",)), (("train",), ("10",))),
+                     stable_first_line_from="chinese-two-rows"),
+        CaptionStage("same-words-different-row-boundary",
+                     "屏幕翻译支持\n离线运行。 火车将在10分钟后离开", "zh-en",
+                     line_word_groups=((), ()), same_flattened_source_as_previous=True),
+    )
+    if chat_slang_samples:
+        stages += (CaptionStage("chat-slang-two-rows",
+                                "tys, that helped a lot!\nnp, you are welcome.", "en-zh",
+                                line_word_groups=((("谢谢", "感谢"),),
+                                                  (("没问题", "没有问题", "不客气", "不用谢"),))),)
+    return stages
+
+
+def _verify_translation(translation: str, expected_words: tuple[str, ...], *,
+                        line_word_groups: tuple[tuple[tuple[str, ...], ...], ...] | None = None,
+                        stable_first_line: str | None = None) -> None:
+    if not all(word in translation.casefold() for word in expected_words):
+        raise RuntimeError("Exact source was recognized, but translation lacks required sample meaning")
+    if line_word_groups is None:
+        return
+    rows = translation.splitlines()
+    if len(rows) != len(line_word_groups) or any(not row.strip() for row in rows):
+        raise RuntimeError("Exact dialogue source was recognized, but translated row boundaries were not preserved")
+    for row, groups in zip(rows, line_word_groups):
+        if not all(any(token.casefold() in row.casefold() for token in alternatives)
+                   for alternatives in groups):
+            raise RuntimeError("Dialogue translation lacks required sample meaning in its own row")
+    if stable_first_line is not None and rows[0] != stable_first_line:
+        raise RuntimeError("Updating only the second dialogue row changed the first translated row")
 
 
 def _api():
@@ -140,16 +210,26 @@ def _assert_own_caption_visible(caption, region) -> None:
             raise RuntimeError("Own caption is occluded; refusing to accept another window's text")
 
 
-def _expected_cache_key(exe: Path, direction: str, text: str) -> str:
-    from screen_translator.core.text import normalize_text
+def _expected_cache_key(exe: Path, direction: str, text: str,
+                        text_layout: str = "continuous") -> str:
+    from screen_translator.core.text import normalize_layout_text
+    from screen_translator.core.chat_translation import (chat_source_layout,
+        chat_translation_fingerprint, prepare_chat_translation)
+    from screen_translator.core.game_terms import translation_identity
     from screen_translator.storage.translation_cache import make_cache_key
     manifest = json.loads((exe.parent / "models" / "manifest.json").read_text(encoding="utf-8"))
-    return make_cache_key(manifest["translation"][direction]["id"], direction, normalize_text(text))
+    source = normalize_layout_text(text, chat_source_layout(text, text_layout, enabled=direction == "en-zh"))
+    policy = chat_translation_fingerprint() if direction == "en-zh" else ""
+    return make_cache_key(translation_identity(manifest["translation"][direction]["id"], direction), direction,
+                          source, text_layout=text_layout, translation_policy=policy,
+                          model_source=prepare_chat_translation(source, text_layout).cache_source if policy else None)
 
 
 def _wait_for_translation(app, child: subprocess.Popen, cache_file: Path,
                           expected_key: str, expected_words: tuple[str, ...],
-                          caption, region, timeout: float) -> tuple[str, int, float]:
+                          caption, region, timeout: float, *,
+                          line_word_groups: tuple[tuple[tuple[str, ...], ...], ...] | None = None,
+                          stable_first_line: str | None = None) -> tuple[str, int, float]:
     started = time.monotonic()
     while time.monotonic() - started < timeout:
         app.processEvents()
@@ -159,8 +239,8 @@ def _wait_for_translation(app, child: subprocess.Popen, cache_file: Path,
         rows = _cache_rows(cache_file)
         translation = rows.get(expected_key)
         if translation is not None:
-            if not all(word in translation.casefold() for word in expected_words):
-                raise RuntimeError("Exact source was recognized, but translation lacks required sample meaning")
+            _verify_translation(translation, expected_words, line_word_groups=line_word_groups,
+                                stable_first_line=stable_first_line)
             return translation, len(rows), time.monotonic() - started
         time.sleep(0.10)
     raise TimeoutError(f"Expected exact source/direction cache key not produced within {timeout:.0f}s")
@@ -174,7 +254,10 @@ def _write_report(path: Path, report: dict) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
+    text_layout = getattr(args, "text_layout", "continuous")
     report: dict = {"passed": False, "mode": "frozen-native-capture",
+                    "text_layout": text_layout, "fixture_scope": "owned-generated-caption-only",
+                    "roblox_live_tested": False, "real_game_compatibility_tested": False,
                     "exe": str(args.exe), "stages": [], "child_pid": None,
                     "data_dir": None, "error": None}
     child: subprocess.Popen | None = None
@@ -188,6 +271,7 @@ def run(args: argparse.Namespace) -> int:
             raise RuntimeError("This acceptance test requires Windows")
         if not args.exe.is_file():
             raise FileNotFoundError(args.exe)
+        stages = _caption_stages(text_layout, chat_slang_samples=getattr(args, "chat_slang_samples", False))
 
         # The call must precede QApplication and any physical-coordinate query.
         from screen_translator.platform.windows.dpi import enable_dpi_awareness
@@ -208,7 +292,7 @@ def run(args: argparse.Namespace) -> int:
                 self.setStyleSheet("background-color: #202020;")
                 layout = QVBoxLayout(self)
                 layout.setContentsMargins(14, 8, 14, 8)
-                self.label = QLabel("The translation works offline.")
+                self.label = QLabel(stages[0].caption)
                 self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.label.setFont(QFont("Microsoft YaHei UI", 29))
                 self.label.setStyleSheet("color: white; background-color: #202020;")
@@ -221,7 +305,8 @@ def run(args: argparse.Namespace) -> int:
         caption = CaptionWindow()
         available = app.primaryScreen().availableGeometry()
         width = max(240, min(1000, available.width() - 64))
-        caption.setFixedSize(width, min(180, max(100, available.height() - 64)))
+        desired_height = 240 if text_layout == "lines" else 180
+        caption.setFixedSize(width, min(desired_height, max(100, available.height() - 64)))
         caption.move(available.x() + (available.width() - caption.width()) // 2,
                      available.y() + max(20, (available.height() - caption.height()) // 3))
         caption.show()
@@ -245,7 +330,7 @@ def run(args: argparse.Namespace) -> int:
         report["data_dir"] = str(run_dir)
         from screen_translator.runtime_terms import authorize_runtime_terms
         test_store = SettingsStore(run_dir / "config.json")
-        test_settings = Settings(region=region, cache_enabled=True)
+        test_settings = Settings(region=region, cache_enabled=True, text_layout=text_layout)
         consent = authorize_runtime_terms(test_settings, test_store,
                                           explicit_accept=args.accept_runtime_terms,
                                           root=args.exe.parent, frozen=True)
@@ -272,29 +357,51 @@ def run(args: argparse.Namespace) -> int:
             raise TimeoutError("No HWND belonging to the spawned exe appeared")
         report["target_hwnd"] = target_hwnd
         _pump_for(app, 0.8)
+        cache_file = run_dir / "cache.sqlite3"
+        first_rows_before = _cache_rows(cache_file)
         _post_toggle(target_hwnd, child)
         started = True
 
-        cache_file = run_dir / "cache.sqlite3"
-        english_translation, count, elapsed = _wait_for_translation(
-            app, child, cache_file, _expected_cache_key(args.exe, "en-zh", "The translation works offline."),
-            ("翻译", "离线"), caption, region, args.stage_timeout)
-        report["stages"].append({"caption": "The translation works offline.",
-                                 "expected_direction": "en-zh", "translation": english_translation,
-                                 "cache_rows": count, "seconds": round(elapsed, 2),
-                                 "exact_source_and_direction_verified": True, "passed": True})
-
-        chinese_changed_at = time.monotonic()
-        caption.label.setText("屏幕翻译支持离线运行。")
-        _pump_for(app, 0.7)
-        chinese_translation, count, elapsed = _wait_for_translation(
-            app, child, cache_file, _expected_cache_key(args.exe, "zh-en", "屏幕翻译支持离线运行。"),
-            ("screen", "offline"), caption, region, args.stage_timeout)
-        elapsed = time.monotonic() - chinese_changed_at
-        report["stages"].append({"caption": "屏幕翻译支持离线运行。",
-                                 "expected_direction": "zh-en", "translation": chinese_translation,
-                                 "cache_rows": count, "seconds": round(elapsed, 2),
-                                 "exact_source_and_direction_verified": True, "passed": True})
+        completed_translations: dict[str, str] = {}
+        for index, stage in enumerate(stages):
+            expected_key = _expected_cache_key(args.exe, stage.direction, stage.caption, text_layout)
+            rows_before = first_rows_before if index == 0 else _cache_rows(cache_file)
+            if text_layout == "lines" and expected_key in rows_before:
+                raise RuntimeError("Dialogue fixture key already exists before its new stage")
+            boundary_equivalent = None
+            if stage.same_flattened_source_as_previous:
+                from screen_translator.core.text import normalize_text
+                boundary_equivalent = normalize_text(stages[index - 1].caption) == normalize_text(stage.caption)
+                if not boundary_equivalent:
+                    raise RuntimeError("Row-boundary fixture did not retain the same flattened source")
+            changed_at = time.monotonic()
+            if index:
+                caption.label.setText(stage.caption)
+                _pump_for(app, 0.7)
+            stable_first_line = None
+            if stage.stable_first_line_from is not None:
+                stable_first_line = completed_translations[stage.stable_first_line_from].splitlines()[0]
+            translation, count, elapsed = _wait_for_translation(
+                app, child, cache_file, expected_key, stage.expected_words,
+                caption, region, args.stage_timeout, line_word_groups=stage.line_word_groups,
+                stable_first_line=stable_first_line)
+            if index:
+                elapsed = time.monotonic() - changed_at
+            completed_translations[stage.name] = translation
+            result = {"stage": stage.name, "caption": stage.caption,
+                      "expected_direction": stage.direction, "translation": translation,
+                      "cache_rows": count, "seconds": round(elapsed, 2),
+                      "exact_source_and_direction_verified": True, "passed": True}
+            if text_layout == "lines":
+                result.update(expected_row_count=len(stage.line_word_groups),
+                              translated_row_count=len(translation.splitlines()),
+                              translated_rows_preserved=True, new_stage_cache_key_verified=True,
+                              per_row_sample_meaning_checked=any(stage.line_word_groups))
+                if stable_first_line is not None:
+                    result["unchanged_first_translated_row_verified"] = True
+                if boundary_equivalent is not None:
+                    result["same_flattened_source_as_previous_verified"] = boundary_equivalent
+            report["stages"].append(result)
 
         _post_toggle(target_hwnd, child)
         stop_posted = True
@@ -346,6 +453,10 @@ def main() -> int:
                         default=PROJECT_ROOT / "build" / "frozen-capture-test.json")
     parser.add_argument("--launch-timeout", type=float, default=25.0)
     parser.add_argument("--stage-timeout", type=float, default=90.0)
+    parser.add_argument("--text-layout", choices=("continuous", "lines"), default="continuous",
+                        help="Use continuous single-line fixtures or separate dialogue-row fixtures")
+    parser.add_argument("--chat-slang-samples", action="store_true",
+                        help="Add controlled tys/np rows; requires --text-layout lines")
     parser.add_argument("--accept-runtime-terms", action="store_true",
                         help="Explicitly accept the supplied runtime terms for this authorized isolated test")
     args = parser.parse_args()

@@ -44,6 +44,127 @@ def test_limit_must_include_eos():
         split_text_for_model("text", CharacterTokenizer(), max_tokens=3)
 
 
+def make_fake_translation_engine(tmp_path, native):
+    from screen_translator.inference.translation.ctranslate2_engine import CTranslate2Engine
+
+    class Tokenizer(CharacterTokenizer):
+        eos = "</s>"
+
+        def decode(self, tokens):
+            return "".join(token for token in tokens if token != self.eos)
+
+    engine = CTranslate2Engine(tmp_path)
+    engine._tokenizers["en-zh"] = Tokenizer()
+    engine._translators["en-zh"] = native
+    return engine
+
+
+def test_ct2_long_input_chunks_preserve_all_source_and_eos_budget(tmp_path):
+    calls = []
+
+    class Native:
+        def translate_batch(self, sources, **kwargs):
+            calls.extend(sources)
+            assert kwargs["max_input_length"] == 192
+            return [SimpleNamespace(hypotheses=[sources[0]])]
+
+    engine = make_fake_translation_engine(tmp_path, Native())
+    source = "abcdefghijklmnop" * 40
+    assert engine.translate(source, "en-zh") == source
+    assert len(calls) > 1
+    assert all(len(tokens) <= 192 and tokens[-1] == "</s>" for tokens in calls)
+
+
+def test_ct2_decoding_cap_splits_and_retries_without_partial_output(tmp_path):
+    calls = []
+
+    class Native:
+        def translate_batch(self, sources, **kwargs):
+            source = sources[0]
+            calls.append(source)
+            tokens = ["overflow"] * 384 if len(source) > 9 else source
+            return [SimpleNamespace(hypotheses=[tokens])]
+
+    engine = make_fake_translation_engine(tmp_path, Native())
+    source = "abcdefghijklmnopqrstu"
+    assert engine.translate(source, "en-zh") == source
+    assert len(calls) > 1
+
+
+def test_ct2_irreducible_decoding_cap_is_permanent_not_truncated(tmp_path):
+    from screen_translator.inference import InputLimitError, PermanentInferenceError
+
+    class Native:
+        def translate_batch(self, sources, **kwargs):
+            return [SimpleNamespace(hypotheses=[["overflow"] * 384])]
+
+    engine = make_fake_translation_engine(tmp_path, Native())
+    with pytest.raises(InputLimitError) as error:
+        engine.translate("abc", "en-zh")
+    assert isinstance(error.value, PermanentInferenceError)
+
+
+def test_ct2_long_chunks_cancel_before_second_native_call(tmp_path):
+    from screen_translator.inference import InferenceCancelled
+    calls = []
+
+    class Native:
+        def translate_batch(self, sources, **kwargs):
+            calls.extend(sources)
+            return [SimpleNamespace(hypotheses=[sources[0]])]
+
+    engine = make_fake_translation_engine(tmp_path, Native())
+    with pytest.raises(InferenceCancelled):
+        engine.translate_cancellable("x" * 500, "en-zh", lambda: bool(calls))
+    assert len(calls) == 1
+
+
+def test_ct2_source_limit_is_permanent_before_loading_models(tmp_path):
+    from screen_translator.inference import InputLimitError
+    from screen_translator.inference.translation.ctranslate2_engine import CTranslate2Engine
+    engine = CTranslate2Engine(tmp_path)
+    with pytest.raises(InputLimitError):
+        engine.translate("x" * 16001, "en-zh")
+    assert not engine._translators
+
+
+@pytest.mark.parametrize("manifest", [[], {"schema_version": 1, "ocr": []},
+                                     {"schema_version": 1, "translation": {"en-zh": []}}])
+def test_invalid_model_manifest_is_permanent(tmp_path, manifest):
+    from screen_translator.inference import ModelFilesError, PermanentInferenceError, read_manifest
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ModelFilesError) as error:
+        read_manifest(tmp_path)
+    assert isinstance(error.value, PermanentInferenceError)
+
+
+def test_missing_translation_identity_is_permanent(tmp_path):
+    from screen_translator.inference import ModelFilesError
+    from screen_translator.inference.translation.ctranslate2_engine import CTranslate2Engine
+    manifest = {"schema_version": 1, "translation": {"en-zh": {"path": "translation/model"}}}
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    engine = CTranslate2Engine(tmp_path)
+    with pytest.raises(ModelFilesError):
+        engine.model_id("en-zh")
+
+
+def test_unreadable_model_file_is_permanent(tmp_path, monkeypatch):
+    from screen_translator.inference import ModelFilesError, verify_files
+    path = tmp_path / "model.bin"
+    path.write_bytes(b"model")
+    entry = {"files": {"model.bin": {"size": 5, "sha256": "not-read"}}}
+    original_open = Path.open
+
+    def deny_model_read(value, *args, **kwargs):
+        if value.name == "model.bin":
+            raise PermissionError("Model file is unavailable")
+        return original_open(value, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny_model_read)
+    with pytest.raises(ModelFilesError):
+        verify_files(tmp_path, entry, ["model.bin"])
+
+
 def test_external_marian_vocabulary_controls_unk_and_eos(tmp_path, monkeypatch):
     """SPM's internal indexes must never be used as Marian vocabulary IDs."""
     source_calls = []

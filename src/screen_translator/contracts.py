@@ -32,6 +32,9 @@ class Settings:
     schema_version: int = 1
     region: Region | None = None
     direction: str = "auto"
+    text_layout: str = "continuous"
+    chat_slang_enabled: bool = True
+    chat_slang_overrides: dict[str, str] = field(default_factory=dict)
     capture_fps: float = 6.0
     idle_fps: float = 2.0
     debounce_ms: int = 180
@@ -41,12 +44,14 @@ class Settings:
     opacity: float = 0.80
     show_source: bool = False
     esc_enabled: bool = True
+    recording_compatibility: bool = True
     hotkeys: dict[str, str] = field(default_factory=lambda: {
-        "select": "Alt+R", "toggle": "Alt+T", "clear": "Alt+C"
+        "select": "Ctrl+Alt+R", "toggle": "Alt+T", "clear": "Alt+C"
     })
     overlay_position: tuple[int, int] | None = None
     cache_enabled: bool = False
     auto_start: bool = False
+    startup_animation: bool = True
     runtime_terms_version: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -63,6 +68,14 @@ class Settings:
         obj = cls(**values)
         if obj.direction not in {"auto", "zh-en", "en-zh"}:
             obj.direction = "auto"
+        if not isinstance(obj.text_layout, str) or obj.text_layout not in {"continuous", "lines"}:
+            obj.text_layout = "continuous"
+        if not isinstance(obj.chat_slang_enabled, bool):
+            obj.chat_slang_enabled = True
+        if not isinstance(obj.startup_animation, bool):
+            obj.startup_animation = True
+        from screen_translator.core.chat_slang import sanitize_overrides
+        obj.chat_slang_overrides = sanitize_overrides(obj.chat_slang_overrides)
         obj.capture_fps = max(1.0, min(12.0, float(obj.capture_fps)))
         obj.idle_fps = max(0.5, min(obj.capture_fps, float(obj.idle_fps)))
         obj.debounce_ms = max(80, min(1000, int(obj.debounce_ms)))
@@ -70,6 +83,7 @@ class Settings:
         obj.cpu_threads = max(1, min(4, int(obj.cpu_threads)))
         obj.font_size = max(12, min(48, int(obj.font_size)))
         obj.opacity = max(0.25, min(1.0, float(obj.opacity)))
+        obj.recording_compatibility = bool(obj.recording_compatibility)
         return obj
 
 

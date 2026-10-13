@@ -1,18 +1,40 @@
 # 本地屏幕中英翻译器
 
-## 下载与运行（普通用户）
+## 下载本次聊天修补版（预发布）
 
-无需安装 Python。请下载 [完整 Windows 运行包：ScreenTranslator-0.1.0-Windows-x64.zip](https://github.com/dhdhd723/windows-offline-screen-translator/releases/download/v0.1.0/ScreenTranslator-0.1.0-Windows-x64.zip)，或进入 [v0.1.0 发布页](https://github.com/dhdhd723/windows-offline-screen-translator/releases/tag/v0.1.0) 查看说明和校验值。不要下载 GitHub 自动生成的 Source code 压缩包来运行程序。
+[完整 Windows 运行 ZIP](https://github.com/dhdhd723/windows-offline-screen-translator/releases/download/v0.1.1-roblox-chat-fix-20261013/ScreenTranslator-0.1.1-Windows-x64-candidate.zip)
+· [发布页及验证说明](https://github.com/dhdhd723/windows-offline-screen-translator/releases/tag/v0.1.1-roblox-chat-fix-20261013)
+· [本次变更与验收边界](docs/releases/v0.1.1-roblox-chat-fix-20261013.md)
 
-1. 更新前，先从旧版托盘菜单选择“退出”，不要同时运行两个版本。
-2. 完整解压 ZIP，在 `ScreenTranslator` 文件夹内双击 `ScreenTranslator.exe`。保留同目录的 `_internal`、`models`、`LICENSES`，不要只复制 exe。
-3. 首次启动请按提示阅读并明确同意随包运行库条款，再使用 Alt+R 框选、Alt+T 开启／停止翻译。
+此包修补默认模式下 `ty` 等缩写不生效和聊天昵称被翻译的问题，已通过截图本地复查和 exe 离屏自检，
+**尚未完成 Roblox 实时聊天／全屏字幕和 NVIDIA 录制实机验收**，不要当作已验收的正式版。
+退出旧版，完整解压到新文件夹，运行 `ScreenTranslator/ScreenTranslator.exe`；不要只复制 exe，
+也不要下载 GitHub 自动生成的 Source code ZIP 来运行。无需安装 Python。
+旧正式版仍可从 [v0.1.0 发布页](https://github.com/dhdhd723/windows-offline-screen-translator/releases/tag/v0.1.0) 下载。
 
-快捷键冲突时，以托盘提示的实际按键为准。默认 Alt+R 被占用会依次尝试 Alt+Shift+R、Ctrl+Alt+R；其他冲突可从托盘菜单操作或在设置中修改。
+项目原始开发者署名：`dhdhd723`。源码元数据和后续构建的 Windows exe 备注保留此标记；
+它用于核对来源，不是防复制或不可删除的保护机制，也不替代第三方组件的署名与许可证。
+
+术语试验版：完整、独立的 `Stardew Valley`、`Hollow Knight`、`Slay the Spire` 标题行使用已核对中文名称；明确的已知作者署名保持原名。仅英译中生效，不对任意行内名称或未知专名做猜测。连续布局会合并 OCR 换行，建议单独框选标题，或使用逐行布局。缓存身份包含术语策略，避免继续使用旧错译。普通菜单和对话仍使用原模型，仍有错译；这项修复不代表全屏显示问题解决。范围、语料及质量观察见 [翻译质量试验语料](docs/翻译质量试验语料.md)。
+
+当前源码版本为 **0.1.1 候选版，待验收**，不要将它当作已经验证的正式版本。
+2026-10-08 本地候选增加持续抓屏异常后的低频自动恢复；主动停止仍会取消恢复，
+确认显示器或选区改变时仍需重新框选。不代表 NVIDIA 同时录制已验收，见
+[捕获恢复修订说明](docs/捕获恢复修订说明.md)。
+
+2026-10-04 本地 R3 修订修复设置纠正后字幕恢复与暂时捕获错误的有限恢复，
+增加不保存截图和文字的捕获健康诊断；须重新构建并验收，不沿用旧 exe 或哈希。
+见 [R3 变更与测试边界](docs/0.1.1-R3变更说明.md) 和 [游戏兼容说明](docs/游戏兼容说明.md)。
+《星露谷物语》已有一个菜单的显示与清空证据，其他游戏正确文字、
+NVIDIA 实际录制和真独占全屏仍需验收。
+
+已公开的旧版是 [v0.1.0](https://github.com/dhdhd723/windows-offline-screen-translator/releases/tag/v0.1.0)，
+其中 [Windows 完整运行 ZIP](https://github.com/dhdhd723/windows-offline-screen-translator/releases/download/v0.1.0/ScreenTranslator-0.1.0-Windows-x64.zip)
+不是本次 0.1.1 候选包。原版本和附件保持不变。
 
 Windows 10 2004 及以上 / Windows 11，64 位。截图、OCR 和中英互译全部在本机完成。发布包自带模型，不需要 Python，不需要付费 API，也不需要显卡环境。
 
-本仓库是开发源码，不包含 exe 或模型权重；“无需 Python”仅指完整便携运行包。项目范围、使用方式、测试结果及隐私边界见 [项目说明报告](docs/项目说明报告.md)。
+本仓库是开发源码，不包含 exe 或模型权重；“无需 Python”仅指完整便携运行包。[项目说明报告](docs/项目说明报告.md)记录 0.1.0 的历史构建与测试边界，不作为 0.1.1 已通过的证据；本轮状态以[发布状态](docs/RELEASE_STATUS.md)为准。
 
 ## 普通用户使用
 
@@ -22,7 +44,7 @@ Windows 10 2004 及以上 / Windows 11，64 位。截图、OCR 和中英互译�
 开启监控。不同意会退出；确认只存于本机设置，条款内容变化后会重新询问。
 该条款不限制 Qt/GEOS/Eigen 等组件原许可证授予的源码、替换和调试权利。
 
-1. 按 Alt+R，拖动鼠标框选文字所在区域。可选择任意显示器，当前版本要求一个选区位于同一显示器内。
+1. 新配置按 Ctrl+Alt+R，拖动鼠标框选文字所在区域。可选择任意显示器，当前版本要求一个选区位于同一显示器内。旧配置会保留已保存的快捷键，请在托盘设置中手动修改，以实际显示的按键为准。
 2. 按 Alt+T，开启持续翻译。首次翻译需加载本地模型，后续译文在文字变化后更新。
 3. 再按 Alt+T 停止监控。停止后保留最后一条字幕。
 4. Alt+C 清空字幕；当前文字未变化前，不会立即重新显示同一句。
@@ -31,11 +53,50 @@ Windows 10 2004 及以上 / Windows 11，64 位。截图、OCR 和中英互译�
 
 字幕默认鼠标穿透、不抢焦点。框选时会暂时获取输入，以便拖动和 Esc 取消；设置窗口也正常接受输入。
 
-尽量只框选一两行字幕。区域过大、字号太小、运动背景、淡入和逐字字幕会增加识别时间。游戏建议使用无边框窗口模式。受 DRM 保护的内容、独占全屏和安全桌面可能无法捕获。
+手动启动后会显示约 2 秒的轻量启动卡片，正常播放完毕后自动打开设置窗口。
+托盘与快捷键不等待动画结束才启用，也不因动画预加载模型。
+可在托盘“设置”→“快捷键”取消“手动启动时显示 2 秒启动动画，结束后打开设置”，
+此后直接进入托盘，不自动打开设置。
+卡片不置顶、不接受输入；设置窗口正常接受输入和焦点，便于直接调整。
+开始框选、启停、清空、隐藏、操作托盘、手动打开设置或退出会立即关闭卡片，
+并取消本次自动打开设置，避免打断正在进行的操作。
+前台窗口覆盖整个显示器或无法安全查询时保守跳过；这不是独占全屏兼容修复。
+自动打开设置前会再次检查前台窗口；在动画期间切到全屏窗口也不会额外弹窗。
+系统关闭动画时改为约 2 秒静态提示，正常结束后仍打开设置（查询失败也不播放动效），
+无需更改 Windows 设置。
+`--background` 和 `--no-startup-animation` 都可省略本次卡片及自动打开设置，
+诊断模式不播放普通启动动画。
+新设置的登录自启命令包含 `--background`；升级不会自行修改已有的注册表启动项，
+已有自启项如需无动画，须在设置中先关闭并保存，再开启并保存以更新命令。
+具体启动与取消行为见[启动界面说明](docs/启动界面说明.md)。
+
+Roblox 等聊天场景中，若上下两行是两条独立对话，可在托盘“设置”→
+“显示与翻译”→“文字排版”选择“逐行对话（聊天／Roblox）”，分别翻译并保留行顺序。
+同一句话自动折行则保留默认“连续文本（段落／长句）”，避免切断上下文。
+此修订需重新构建运行包，不会改变旧 exe；不代表已通过 Roblox 实机验收。
+详见[逐行对话使用说明](docs/使用说明.md#聊天与-roblox-的逐行对话)。
+
+聊天缩写词表默认启用，英文 → 中文时两种排版均生效，不需先切换逐行模式。
+独立消息 `ty` / `tys` → `谢谢`、`np` → `没问题` 使用确定中文，不再只把英文缩写交给模型猜；
+更长句中的缩写先展开为英文再翻译。明确的 `昵称: 正文` 保留昵称，仅翻译正文。
+连续排版遇到两条带明确昵称前缀的 OCR 消息时自动保留独立行，普通段落软换行仍合并。
+已内置 40 项，可在“内置词表”分页查看，无需逐条添加；“自定义（可选）”可以保持空白。
+托盘“设置”→“聊天词表”可关闭或填写 `缩写 = 英文展开` 来覆盖、补充特殊用法。
+常见词义及核对限制见[聊天内置词表](docs/聊天内置词表.md)。
+原文保留，自定义英文规则优先于内置中文短回复；旧错误缓存不会用于新策略。
+未命中仍交给本地模型；例如未知缩写 `oms` 尚无可靠词义，没有擅自添加释义。
+普通口语长句仍可能错译，这项修订不是模型整体质量提升。详见[聊天修订说明](docs/聊天修订说明.md)。
+
+“录屏兼容”默认开启（`recording_compatibility=true`）：不对本应用字幕启用
+Windows 捕获排除，因此字幕允许被其他截图、录像或共享屏幕记录。关闭该
+选项才尝试排除本应用字幕；它不是 DRM 绕过，也不修改游戏或 NVIDIA。
+字幕应位于翻译选区外，避免程序反复识别自己的译文。
+
+尽量只框选一两行清晰字幕或菜单，不要选择艺术字标题。区域过大、字号太小、运动背景、淡入和逐字字幕会增加识别时间。游戏优先使用普通窗口或无边框窗口。切换游戏、模式、分辨率后重新框选。已有菜单测试不代表全屏对白已通过；受保护的内容、真独占全屏和安全桌面可能无法捕获或无法叠加普通字幕窗。
 
 配置保存在 `%LOCALAPPDATA%\ScreenTranslator\config.json`。默认不保存截图、不记录识别原文，翻译缓存仅存在内存。设置中可开启磁盘译文缓存，缓存数据库会保存译文；关闭选项不会删除已有数据库。
 
-默认 Alt+R 若被其他程序占用，程序会尝试改用 Alt+Shift+R，其次 Ctrl+Alt+R，并保存实际快捷键、更新托盘提示；不会修改其他程序。自定义快捷键若被占用，会提示用户从设置修改。显示器位置或分辨率变化后，需重新框选。
+新配置的框选默认键改为 Ctrl+Alt+R，避免继续优先使用容易与其他工具冲突的 Alt+R；并不保证新按键在所有机器上空闲。升级不会自动覆盖旧配置中的键值，请在托盘设置中查看并手动修改。占用或注册失败时按托盘提示处理，也可先用托盘菜单操作；程序不修改其他软件的快捷键。显示器位置或分辨率变化后，需重新框选。
 
 ## 本地自检
 
@@ -43,8 +104,15 @@ Windows 10 2004 及以上 / Windows 11，64 位。截图、OCR 和中英互译�
 
 `--smoke-test --report 报告路径.json` 初始化 UI 和 Windows 集成后自动退出。自检结果不能代替具体游戏、显示器和 DPI 的实际验收。
 
+`--startup-self-test --report 报告路径.json` 检查程序自己绘制的启动卡片、两秒自然结束、
+资源清理及排队打开测试专用设置窗口的衔接，
+不读取屏幕、不注册全局快捷键、不加载 OCR/翻译模型。无界面自动测试需设置
+`QT_QPA_PLATFORM=offscreen`；该模式验证的是窗口标志和绘制生命周期，不代表实际焦点、游戏或 NVIDIA 录制验收。
+
+`--capture-test --report 报告路径.json` 使用已保存选区有限检查真实 MSS、OCR 和本地翻译；不保存截图、原文或译文，不改选区和缓存。它不验收字幕显示或文字正确性。运行条件、字段和边界见[游戏兼容说明](docs/游戏兼容说明.md)。
+
 诊断也需要先接受相同的随包条款；未接受时会返回退出码 3，而不是隐式同意。
-明确读过条款并授权自动验收后，可对 `--self-test` 或 `--smoke-test` 增加
+明确读过条款并授权自动验收后，可对上述诊断模式增加
 `--accept-runtime-terms`；该参数不能用于绕过普通 GUI 首次确认。
 
 ## 开发与构建
@@ -88,10 +156,12 @@ OCR 使用 PP-OCRv5 mobile 中英模型，由 RapidAI 提供 ONNX 转换版本�
 不要直接上传整个开发目录或原始便携包。先阅读 [发布与隐私说明](docs/PUBLISHING.md)，再从项目根目录生成干净源码和净化运行包：
 
 ```powershell
-python tools/prepare_public_release.py --portable dist/ScreenTranslator --output build/public-export --candidate
+python tools/prepare_public_release.py --portable dist/ScreenTranslator --output build/public-export-0.1.1-candidate --candidate
 ```
 
-检查通过后，只将 `build/public-export/repo/` 的内容作为仓库源码；源码压缩包和净化便携包由同一工具生成。原始日志、测试报告、用户配置、译文缓存、真实截图和 Git 历史不能混入。GitHub 账号及提交作者信息仍可能公开，第三方版权声明必须保留。本轮采用[同版本纯 CPU 重建](docs/CPU_BUILD_PROVENANCE.md)，不使用旧 Intel/MKL/CUDA 候选二进制；微软运行库采用正式个人 Community 许可发行路径和官方原件。实际发布及验收范围见[发布状态](docs/RELEASE_STATUS.md)，第三方证据见[核验记录](docs/THIRD_PARTY_BINARY_NOTICES.md)。导出默认是候选包，正式 `--final` 导出需要审核通过状态；导出工具不自动上传 GitHub。应用自身尚未选定开源许可证。
+导出器只读解析 source 的 pyproject 与应用版本字面量，二者不一致时拒绝导出，不执行待导出源码；ZIP 名称自动使用一致的版本。输出目录必须是新的，不能覆盖旧包。上述命令生成 `ScreenTranslator-0.1.1-Windows-x64-candidate.zip` 与 `ScreenTranslator-0.1.1-source.zip`。版本声明不证明输入 exe 是新构建；还须检查实际 exe 自检的版本和本轮哈希。
+
+检查通过后，只将 `build/public-export-0.1.1-candidate/repo/` 的内容作为仓库源码；源码压缩包和净化便携包由同一工具生成。原始日志、测试报告、用户配置、译文缓存、真实截图和 Git 历史不能混入。GitHub 账号及提交作者信息仍可能公开，第三方版权声明必须保留。保留已核验的[纯 CPU 构建材料](docs/CPU_BUILD_PROVENANCE.md)，不混入旧 Intel/MKL/CUDA 候选二进制；微软运行库继续采用正式个人 Community 许可发行路径和官方原件。版本变更后重新核验，新 exe 不沿用旧摘要。实际发布及验收范围见[发布状态](docs/RELEASE_STATUS.md)，第三方材料见[核验记录](docs/THIRD_PARTY_BINARY_NOTICES.md)。导出默认是候选包，正式 `--final` 需要该源版本的唯一 approved 与 release-version 标记；目前 pending，不允许正式导出。导出工具不自动上传 GitHub。应用自身尚未选定开源许可证。
 
 本程序使用 LGPLv3 许可的 Qt / PySide6 / Shiboken 6.9.3。便携包的 `LICENSES/Qt/` 包含 GPL/LGPL 全文及对应源码档案。关闭程序后，可在 `_internal/PySide6/` 与 `_internal/shiboken6/` 中替换接口兼容的库；允许为调试这些库的修改而进行逆向工程。详情见随包 Qt 声明，微软保护条款不限制这些原许可权利。
 
