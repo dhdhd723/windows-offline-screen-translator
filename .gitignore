@@ -27,6 +27,8 @@ config.json
 config.json.*
 settings.json
 settings.json.*
+presets.json
+presets.json.*
 *.sqlite
 *.sqlite3
 *.sqlite-*

@@ -12,6 +12,7 @@ import time
 from collections.abc import Mapping
 
 from . import __version__
+from .contracts import Settings
 from .paths import data_root, install_root, model_root
 
 
@@ -441,6 +442,43 @@ def main(argv: list[str] | None = None) -> int:
         ui.set_effective_hotkeys(hotkeys.effective_hotkeys)
         hotkeys.set_monitoring(pipeline.is_running or has_caption)
         status("设置已保存")
+
+    def apply_preset(preset) -> tuple[bool, str]:
+        nonlocal settings, has_caption, hidden, resume_after_selection
+        from .core.scene_presets import restore_preset
+        try:
+            candidate, reset_region = restore_preset(settings, preset, validate_region)
+            # Failed disk writes leave the running session and its config intact.
+            store.save(candidate)
+        except (OSError, ValueError, TypeError, OverflowError):
+            logging.exception("Could not apply local scene preset")
+            return False, "预设未应用：无法保存设置或预设已损坏。原运行设置保持不变。"
+        dismiss_startup_card()
+        resume_after_selection = False
+        # Cancel any selection without resuming its former capture session.
+        ui.cancel_selection()
+        clear_translation_session(pipeline, ui, hotkeys)
+        has_caption = False
+        hidden = False
+        settings = candidate
+        pipeline.update_settings(settings)
+        ui.update_settings(settings)
+        ui.set_hidden(False)
+        hotkey_errors.clear()
+        hotkeys.update(settings)
+        ui.set_effective_hotkeys(hotkeys.effective_hotkeys)
+        hotkeys.set_monitoring(False)
+        message = f"已应用“{preset.name}”，持续翻译已暂停；"
+        if reset_region:
+            message += f"保存的选区不可用，请按 {settings.hotkeys['select']} 重新框选"
+        else:
+            message += f"{settings.hotkeys['toggle']} 开启翻译"
+        status(message)
+        ui.notify("场景预设已应用", message, warning=reset_region or bool(hotkey_errors))
+        return True, message
+
+    from .storage.presets import PresetStore
+    ui.configure_presets(PresetStore(), lambda: Settings.from_dict(settings.to_dict()), apply_preset)
 
     def quit_app() -> None:
         nonlocal shutting_down

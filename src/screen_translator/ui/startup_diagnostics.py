@@ -142,6 +142,8 @@ def run_startup_self_test() -> dict:
                  _lifecycle(animated=True, early_close=True)]
         from screen_translator.ui.hotkey_diagnostics import run_hotkey_recording_self_test
         hotkey_recording = run_hotkey_recording_self_test()
+        from screen_translator.ui.preset_diagnostics import run_preset_self_test
+        scene_presets = run_preset_self_test()
         # Decisions are tested independently of actual screen contents.
         skips = {key: not startup_presentation(**{**dict(enabled=True), **value}).show
                  for key, value in {
@@ -150,9 +152,9 @@ def run_startup_self_test() -> dict:
                      "covering_foreground": dict(foreground_covers_monitor=True)}.items()}
     models_loaded = any(name in sys.modules for name in ("ctranslate2", "onnxruntime", "rapidocr"))
     return {"passed": all(item["passed"] for item in cases) and all(skips.values())
-            and hotkey_recording["passed"]
+            and hotkey_recording["passed"] and scene_presets["passed"]
             and not attempts and not models_loaded,
-            "cases": cases, "hotkey_recording": hotkey_recording,
+            "cases": cases, "hotkey_recording": hotkey_recording, "scene_presets": scene_presets,
             "skip_policy": skips, "network_attempts": attempts,
             "presentation_ms": PRESENTATION_MS,
             "inference_runtime_loaded": models_loaded,

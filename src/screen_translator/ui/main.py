@@ -47,6 +47,10 @@ class MainUI(QObject):
         self._latest: TranslationResult | None = None
         self._selector: RegionSelector | None = None
         self._settings_dialog: SettingsDialog | None = None
+        self._preset_dialog = None
+        self._preset_store = None
+        self._preset_current = None
+        self._preset_apply = None
         self._was_visible_before_selection = False
         self._overlap_warning_shown = False
         self._native_warning_shown = False
@@ -75,6 +79,8 @@ class MainUI(QObject):
         self.copy_action.setEnabled(False)
         self.copy_action.triggered.connect(self._copy_translation)
         self.menu.addSeparator()
+        self.presets_action = self.menu.addAction("场景预设…")
+        self.presets_action.triggered.connect(self._show_presets)
         self.settings_action = self.menu.addAction("设置…")
         self.settings_action.triggered.connect(self._show_settings)
         exit_action = self.menu.addAction("退出")
@@ -231,9 +237,45 @@ class MainUI(QObject):
     def open_settings(self) -> None:
         self._show_settings()
 
+    def configure_presets(self, store, current, apply) -> None:
+        self._preset_store, self._preset_current, self._preset_apply = store, current, apply
+
+    def _show_presets(self) -> None:
+        if self._closed or self._preset_store is None:
+            return
+        self.settings_opening.emit()
+        if self._settings_dialog is not None:
+            try:
+                dirty = bool(self._settings_dialog.editable_changes())
+            except (ValueError, TypeError):
+                dirty = True
+            if dirty or any(field.is_recording for field in self._settings_dialog.hotkeys.values()):
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.information(self._settings_dialog, "请先保存设置", "当前设置窗口有未保存或未完成的修改。请先保存或取消，再打开场景预设。")
+                return
+            self._settings_dialog.reject()
+        if self._preset_dialog is not None:
+            self._preset_dialog.raise_()
+            self._preset_dialog.activateWindow()
+            return
+        from screen_translator.ui.preset_dialog import PresetDialog
+        dialog = PresetDialog(self._preset_store, self._preset_current, self._preset_apply)
+        self._preset_dialog = dialog
+        dialog.finished.connect(lambda result: self._preset_finished(dialog))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _preset_finished(self, dialog) -> None:
+        if self._preset_dialog is dialog:
+            self._preset_dialog = None
+        dialog.deleteLater()
+
     def _show_settings(self) -> None:
         if self._closed:
             return
+        if self._preset_dialog is not None:
+            self._preset_dialog.close()
         self.settings_opening.emit()
         if self._closed:
             return
@@ -244,6 +286,7 @@ class MainUI(QObject):
         dialog = SettingsDialog(self.settings)
         self._settings_dialog = dialog
         dialog.hotkey_recording_changed.connect(self.hotkey_recording_changed.emit)
+        dialog.manage_presets_requested.connect(self._show_presets)
         dialog.finished.connect(lambda result: self._settings_finished(dialog, result))
         dialog.show()
         dialog.raise_()
@@ -268,6 +311,8 @@ class MainUI(QObject):
             self._release_selector()
         if self._settings_dialog:
             self._settings_dialog.close()
+        if self._preset_dialog:
+            self._preset_dialog.close()
         self.overlay.close()
         self.tray.hide()
         self.menu.close()

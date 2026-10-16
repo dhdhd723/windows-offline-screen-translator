@@ -6,7 +6,7 @@ from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                                QDoubleSpinBox, QFormLayout, QLabel,
                                QMessageBox, QPlainTextEdit, QSlider, QSpinBox, QTabWidget,
-                               QVBoxLayout, QWidget)
+                               QPushButton, QVBoxLayout, QWidget)
 
 from screen_translator.contracts import Settings
 from screen_translator.core.chat_slang import BUILTIN_CHAT_SLANG, sanitize_overrides
@@ -69,6 +69,7 @@ def merge_settings_changes(current: Settings, changes: Mapping[str, object]) -> 
 
 
 class SettingsDialog(QDialog):
+    manage_presets_requested = Signal()
     hotkey_recording_changed = Signal(bool)
 
     def __init__(self, settings: Settings) -> None:
@@ -272,6 +273,19 @@ class SettingsDialog(QDialog):
         hint.setStyleSheet("color: #64748b; font-size: 12px;")
         performance_form.addRow(hint)
         tabs.addTab(performance, "性能与缓存")
+
+        presets = QWidget()
+        preset_layout = QVBoxLayout(presets)
+        preset_hint = QLabel("可将游戏、聊天、阅读等场景的设置保存为独立预设，之后快速恢复。\n"
+                             "请先保存本窗口的修改，再打开管理器；也可从托盘“场景预设…”进入。\n"
+                             "应用预设会清空字幕并暂停翻译，选区可选保存。预设仅存于本机。")
+        preset_hint.setWordWrap(True)
+        preset_layout.addWidget(preset_hint)
+        self.manage_presets_button = QPushButton("管理场景预设…")
+        self.manage_presets_button.clicked.connect(self.manage_presets_requested.emit)
+        preset_layout.addWidget(self.manage_presets_button)
+        preset_layout.addStretch()
+        tabs.addTab(presets, "场景预设")
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save
                                    | QDialogButtonBox.StandardButton.Cancel)

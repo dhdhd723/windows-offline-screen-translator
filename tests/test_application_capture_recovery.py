@@ -45,12 +45,19 @@ class Card:
 
 
 @pytest.fixture
-def fake_desktop(monkeypatch):
+def fake_desktop(monkeypatch, tmp_path):
     from PySide6 import QtCore, QtWidgets
 
+    monkeypatch.setenv("SCREEN_TRANSLATOR_DATA", str(tmp_path / "isolated-data"))
     state = SimpleNamespace(timers=[], pipeline=None, ui=None, hotkeys=None, scenario=None,
                             queued=[], single_shots=[], environment_queries=0,
                             foreground_covers_monitor=False, environment_error=None)
+    state.saved_settings = []
+    state.save_error = None
+    def save_settings(value):
+        if state.save_error:
+            raise state.save_error
+        state.saved_settings.append(Settings.from_dict(value.to_dict()))
     settings = Settings(region=Region(20, 20, 64, 32, "display-a", (0, 0, 1920, 1080)),
                         startup_animation=False)
 
@@ -125,6 +132,18 @@ def fake_desktop(monkeypatch):
         def clear_result(self):
             self.clears += 1
 
+        def configure_presets(self, store, current, apply):
+            self.preset_store, self.preset_current, self.preset_apply = store, current, apply
+
+        def cancel_selection(self):
+            self.selection_cancelled.emit()
+
+        def update_settings(self, value):
+            self.settings = Settings.from_dict(value.to_dict())
+
+        def notify(self, *args, **kwargs):
+            pass
+
         def select_region(self):
             raise AssertionError("This test must not create a selection window")
 
@@ -151,6 +170,9 @@ def fake_desktop(monkeypatch):
 
         def start(self, saved):
             pass
+
+        def update(self, saved):
+            self.effective_hotkeys = dict(saved.hotkeys)
 
         def set_monitoring(self, value):
             self.monitoring = value
@@ -189,6 +211,9 @@ def fake_desktop(monkeypatch):
         def clear(self):
             self.clears += 1
 
+        def update_settings(self, value):
+            self.settings = Settings.from_dict(value.to_dict())
+
     class Cache:
         def set_persistence(self, *args):
             pass
@@ -202,7 +227,7 @@ def fake_desktop(monkeypatch):
     monkeypatch.setattr(application, "check_models", lambda: [])
     monkeypatch.setattr(sys, "excepthook", sys.excepthook)
     monkeypatch.setattr("screen_translator.storage.settings.SettingsStore",
-                        lambda: SimpleNamespace(load=lambda: settings))
+                        lambda: SimpleNamespace(load=lambda: settings, save=save_settings))
     monkeypatch.setattr("screen_translator.runtime_terms.authorize_runtime_terms",
                         lambda *args, **kwargs: SimpleNamespace(accepted=True))
     monkeypatch.setattr("screen_translator.platform.windows.dpi.enable_dpi_awareness", lambda: None)

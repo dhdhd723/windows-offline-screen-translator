@@ -26,7 +26,7 @@ PRIVATE_DIRS = {".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_ca
                 "venv", ".venv", "env", "node_modules"}
 PRIVATE_SUFFIXES = {".pyc", ".pyo", ".log", ".db", ".sqlite", ".sqlite3", ".pem", ".key",
                     ".p12", ".pfx", ".whl", ".part", ".bak", ".tmp"}
-PRIVATE_NAMES = {"config.json", "settings.json", "credentials.json", "secrets.json", "tests.xml",
+PRIVATE_NAMES = {"config.json", "settings.json", "presets.json", "credentials.json", "secrets.json", "tests.xml",
                  "id_rsa", "id_ed25519"}
 TEXT_SUFFIXES = {".txt", ".md", ".html", ".htm", ".rst", ".apache", ".bsd", ".patch"}
 ARCHIVE_SUFFIXES = (".tar.xz", ".tar.gz", ".tgz", ".tar.bz2")
@@ -99,7 +99,7 @@ def _private(relative: Path) -> bool:
     name = relative.name.lower()
     return (any(part in PRIVATE_DIRS for part in parts) or relative.suffix.lower() in PRIVATE_SUFFIXES
             or name in PRIVATE_NAMES or name == ".env" or name.startswith(".env.")
-            or name.startswith(("config.json.", "settings.json."))
+            or name.startswith(("config.json.", "settings.json.", "presets.json."))
             or any(marker in name for marker in (".sqlite-", ".sqlite3-", ".db-", ".log.")))
 
 
