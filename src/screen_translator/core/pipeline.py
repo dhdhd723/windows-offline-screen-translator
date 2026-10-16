@@ -210,7 +210,8 @@ class Pipeline:
                 self._last_observed = ""
                 self._retry_not_before = 0.0
                 self._force_epoch += 1
-            if old_settings.cpu_threads != new_settings.cpu_threads:
+            if (old_settings.cpu_threads != new_settings.cpu_threads
+                    or old_settings.direction != new_settings.direction):
                 self._configuration_requested = True
                 self._condition.notify()
         self._cache.set_persistence(new_settings.cache_enabled)
@@ -540,9 +541,15 @@ class Pipeline:
     def _configure_engines(self) -> None:
         with self._lock:
             threads = self._settings.cpu_threads
-        if self._configured_threads == threads:
-            return
+            direction = self._settings.direction
         try:
+            # Release inactive language weights only on this inference worker,
+            # never concurrently with a native translation or on the UI thread.
+            select = getattr(self._translator, "configure_direction", None)
+            if callable(select):
+                select(direction)
+            if self._configured_threads == threads:
+                return
             for engine in (self._ocr, self._translator):
                 configure = getattr(engine, "configure_threads", None)
                 if callable(configure):

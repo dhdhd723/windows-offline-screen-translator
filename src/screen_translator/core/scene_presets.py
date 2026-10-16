@@ -48,7 +48,7 @@ def checked_values(values: object, include_region: bool) -> dict:
         if (isinstance(data[key], bool) or not isinstance(data[key], (float, int))
                 or not math.isfinite(data[key])):
             raise PresetError("预设数值格式无效")
-    if data["direction"] not in ("auto", "en-zh", "zh-en") or data["text_layout"] not in ("lines", "continuous"):
+    if data["direction"] not in ("auto", "en-zh", "zh-en", "ja-zh") or data["text_layout"] not in ("lines", "continuous"):
         raise PresetError("预设翻译方向或排版无效")
     from screen_translator.core.chat_slang import sanitize_overrides
     if not isinstance(data["chat_slang_overrides"], dict) or sanitize_overrides(

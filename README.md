@@ -1,18 +1,19 @@
-# 本地屏幕中英翻译器
+# 本地屏幕翻译器
 
-[![场景预设预发布](https://img.shields.io/badge/release-0.1.1%20scene%20presets-orange?style=flat-square)](https://github.com/dhdhd723/windows-offline-screen-translator/releases/tag/v0.1.1-scene-presets-20261016)
+[![日语增强预发布](https://img.shields.io/badge/release-0.1.1%20Japanese-orange?style=flat-square)](https://github.com/dhdhd723/windows-offline-screen-translator/releases/tag/v0.1.1-japanese-20261016)
 [![Windows](https://img.shields.io/badge/platform-Windows%20x64-0078D4?style=flat-square)](#兼容与限制)
 [![Downloads](https://img.shields.io/github/downloads/dhdhd723/windows-offline-screen-translator/total?style=flat-square&label=Downloads)](https://github.com/dhdhd723/windows-offline-screen-translator/releases)
 [![Stars](https://img.shields.io/github/stars/dhdhd723/windows-offline-screen-translator?style=flat-square&label=Stars)](https://github.com/dhdhd723/windows-offline-screen-translator/stargazers)
 
 **框选屏幕上的文字，在本机识别并翻译成悬浮字幕。**
-适用于 Windows 上的游戏聊天、菜单和网页文字。开启持续翻译后，程序监控固定区域，文字变化时更新译文；截图、OCR 和中英互译都在本机完成。
-*Offline Chinese-English screen translator for Windows.*
+适用于 Windows 上的游戏聊天、菜单和网页文字。支持中英互译，以及手动选择日语转简体中文。开启持续翻译后，程序监控固定区域，文字变化时更新译文；截图、OCR 和翻译都在本机完成。
+*Offline screen translator for Windows: Chinese ↔ English, Japanese → Simplified Chinese.*
 
 完整运行包自带模型和运行依赖，无需安装 Python、配置显卡或使用付费 API。项目署名 **dhdhd723**。
-当前提供 **0.1.1 场景预设预发布版**；已有离线自检结果，但不保证所有游戏、全屏模式或文字都能正确识别和翻译，详见[兼容与限制](#兼容与限制)。
+当前提供 **0.1.1 日语增强预发布版**，完整包约 791 MB。已有离线自检结果，但不保证所有游戏、全屏模式或文字都能正确识别和翻译，详见[兼容与限制](#兼容与限制)。
 
 - 框选固定区域，持续监控文字变化，结合相似度与缓存减少重复处理。
+- 中英双向翻译，另可选择“日语 → 简体中文”；不依赖在线翻译服务。
 - 半透明置顶字幕默认鼠标穿透、不抢焦点，支持隐藏、复制译文及托盘操作。
 - 内置 58 项聊天缩写，独立消息 `ty`、`np` 等可直接得到中文短回复；支持自定义词表和逐行对话模式。
 - 点击“修改”后直接按下快捷键组合，无需手动输入名称；清空键同时停止监控，启停键可恢复原选区。
@@ -22,17 +23,19 @@
 
 | 下载 | 内容 |
 | --- | --- |
-| [完整 Windows 运行包](https://github.com/dhdhd723/windows-offline-screen-translator/releases/download/v0.1.1-scene-presets-20261016/ScreenTranslator-0.1.1-Windows-x64-candidate.zip) | 含 exe、本地模型、运行依赖和许可文件，普通用户下载这一项 |
-| [发布页与文件校验](https://github.com/dhdhd723/windows-offline-screen-translator/releases/tag/v0.1.1-scene-presets-20261016) | 更新说明、测试报告、对应源码与 SHA256SUMS.txt |
+| [完整 Windows 运行包（7z，约 791 MB）](https://github.com/dhdhd723/windows-offline-screen-translator/releases/download/v0.1.1-japanese-20261016/ScreenTranslator-0.1.1-Japanese-Windows-x64-lossless.7z) | 含 exe、中英和日语模型、运行依赖及许可文件，普通用户下载这一项 |
+| [发布页与文件校验](https://github.com/dhdhd723/windows-offline-screen-translator/releases/tag/v0.1.1-japanese-20261016) | 更新说明、测试报告、对应源码与 SHA256SUMS.txt |
+| [只需中英的旧场景预设版](https://github.com/dhdhd723/windows-offline-screen-translator/releases/tag/v0.1.1-scene-presets-20261016) | 不含日语模型，ZIP 约 379 MB；属于之前的预发布版 |
 | [全部历史版本](https://github.com/dhdhd723/windows-offline-screen-translator/releases) | 保留旧预发布与正式 v0.1.0，不覆盖原附件 |
 
-1. 从托盘退出旧版，将新 Windows ZIP **完整解压到新目录**。
+1. 从托盘退出旧版，将新 Windows 7z **完整解压到新目录**；系统无法打开时可使用 [7-Zip 官方工具](https://www.7-zip.org/download.html)。
 2. 进入 `ScreenTranslator` 文件夹，双击 `ScreenTranslator.exe`。
 3. 首次启动阅读并确认随包微软运行库条款；不同意会退出，不会启动监控。
 4. 正常手动启动显示约 2 秒启动卡片，结束后打开设置。关闭该选项后直接进入托盘。
 
 请保留 exe 同目录的 `_internal`、`models` 和 `LICENSES` 文件夹，不要只复制 exe。
 GitHub 自动生成的 **Source code ZIP 不是运行包**；仓库源码不含 exe 和模型权重。“无需 Python”只适用于完整运行包。
+本次仅用无损压缩将日语完整包从 840.3 MB 降到 791.1 MB，减少约 49.2 MB（5.86%）。全部 695 个文件与原 ZIP 内容一致，不改模型精度；解压后约 1.095 GB，运行内存不会因压缩而下降。
 
 ## 使用
 
@@ -51,6 +54,14 @@ Esc 会继续传给当前应用；框选层和设置窗口需要正常接受输�
 快捷键被系统或其他软件占用时会提示，请更换组合键或使用托盘菜单。
 
 字幕放在翻译选区外，避免反复识别自己的译文。尽量框选一两行清晰文字；首次翻译需要加载模型，字号小、运动背景和大选区都会增加识别时间。
+
+### 日语转简体中文
+
+设置 →“显示与翻译”→“翻译方向”选择“日语 → 简体中文（需日语模型包）”，保存后框选清晰横排文字，再按启停键翻译。
+可以把日语方向和排版保存为场景预设。原“自动判断中英方向”仍只处理中英；不含中文转日语、日语转英文或三语自动识别。
+
+日语模型在首次使用时加载；切换语言会在后台释放另一类模型，再切回时可能重新等待加载。没有模型时会明确提示，不会自动联网补包。
+竖排、注音小字、艺术字、姓名与混合语言尚无可靠支持承诺；普通短句也可能错译，见[日语使用与模型说明](docs/日语支持说明.md)。
 
 ### 场景预设
 
@@ -79,12 +90,14 @@ Esc 会继续传给当前应用；框选层和设置窗口需要正常接受输�
 - 目标系统为 Windows 10 2004 及以上 / Windows 11，64 位。仅支持单个固定区域，可在任一显示器内框选，不支持跨屏选区。
 - 普通窗口或无边框窗口优先。真独占全屏、受保护内容和安全桌面可能无法捕获，或无法叠加普通悬浮字幕；当前没有全屏覆盖保证。
 - “录屏兼容”默认开启，允许其他录屏或共享软件记录字幕；关闭时才尝试排除本应用字幕。它不修改 NVIDIA 或游戏，也不是绕过内容保护。
-- 本轮新增 100 项预设专项测试通过，最终源码回归 3,576 项通过、4 项跳过、6 项排除。新 exe 的 7 项预设自检、116 项词表短回复检查、42 项固定图像 OCR 管线检查通过；这些不是实时游戏验收。
+- 日语新增 31 项测试通过，最终冻结源码回归 3,607 项通过、4 项跳过、6 项排除；跳过和排除不计为通过。新 exe 日语固定文本 17 项和合成 OCR 图像 6 项功能检查通过，关键词 17/17、OCR 去空格逐字检查 6/6；关键词检查不能证明完整语义正确。
+- 原有中英、7 项预设、116 项词表短回复和 42 项固定图像 OCR 管线自检通过。7z 解压后全部 695 个文件与原 ZIP 的 SHA-256 一致，解压后的 exe 启动与翻译自检再次通过；这些不是实时游戏验收。
 - **本轮尚未完成 Roblox 实时聊天、NVIDIA 录制、真独占全屏、物理多屏混合 DPI 和干净 Windows 系统的实机验收。** 离屏 Qt 控件、临时数据和合成图像测试不能替代这些检查。
 - 普通长句仍可能重复、漏译或错译，扩展语义关键词检查仍为 4/8；`l8r` 可能被 OCR 误识别。简体字形转换不等于语义润色，已知专名规则也不覆盖未知名称。
+- 日语仍有已记录错译，例如“ここで待ってください。”得到“请等到这里。”，不能把“返回中文”当作“意思正确”。本轮也没有完成真实日文游戏验收。
 - 程序未数字签名，Windows 可能提示未识别发布者。可用发行页的 `SHA256SUMS.txt` 核对文件，不需要关闭安全软件。
 
-本轮完整验证、哈希和测试边界见[场景预设测试报告](docs/releases/SCENE_PRESETS_TEST_REPORT_20261016.md)。
+本轮完整验证、哈希和测试边界见[日语测试报告](docs/releases/JAPANESE_TEST_REPORT_20261016.md)与[无损精简说明](docs/releases/LOSSLESS_PACKAGE_REPORT_20261016.md)。
 历史实机片段只说明当时的菜单或窗口，不自动作为本版通过证据。
 
 ## 本地数据与隐私
@@ -110,19 +123,24 @@ python launcher.py --self-test --report build/self-test.json
 python -m PyInstaller packaging/ScreenTranslator.spec --distpath dist --workpath build/pyinstaller
 ```
 
+以上默认准备中英模型。日语模型需另外按[日语构建说明](docs/日语支持说明.md#构建与来源)使用 `tools/prepare_japanese_model.py` 准备，并将固定哈希与模型许可纳入清单；不要将开发转换环境复制进运行包。
+
 这些命令不自动生成与发行包一致的纯 CPU 原生库。正式重建须按[纯 CPU 构建方案](docs/CPU_ONLY_BUILD_PLAN.md)编译并安装本地 CTranslate2 wheel，再复制模型、收集许可及对应源码，并重新核验新 exe。
 不要将包索引中的 CUDA-enabled wheel 当作本项目已核验构建；打包、许可与净化步骤见[开发与构建完整记录](README-HISTORY.md#开发与构建)和[发布与隐私说明](docs/PUBLISHING.md)。
 
-OCR 使用 RapidAI 转换的 PP-OCRv5 mobile 中英 ONNX 模型；翻译使用 Helsinki-NLP `opus-mt-zh-en`、`opus-mt-en-zh`，转换为 CTranslate2 INT8。
+OCR 使用 RapidAI 转换的 PP-OCRv5 mobile ONNX 模型及匹配字库，复用其日语识别能力；中英翻译使用 Helsinki-NLP `opus-mt-zh-en`、`opus-mt-en-zh`，日语转中文使用固定版本 `facebook/m2m100_418M`，均转换为 CTranslate2 INT8。
 模型来源、固定版本与哈希在完整包 `models/manifest.json`；英中模型为 Apache-2.0，中英模型为 CC-BY-4.0。
+新增 M2M100 模型保留独立 MIT 通知；日语原文不做繁简转换，最终中文译文按既有策略统一简体字形。
 英中输出按固定 OpenCC 官方词典做一次简体字形转换，不改昵称或模型权重。当前没有 DXGI、跨屏选区、高质量模型包或字幕历史功能。
 
 ## 文档
 
 | 文档 | 内容 |
 | --- | --- |
-| [本次发布说明](docs/releases/v0.1.1-scene-presets-20261016.md) | 场景预设更新、附件与下载说明 |
-| [测试报告](docs/releases/SCENE_PRESETS_TEST_REPORT_20261016.md) | 本轮源码、exe、压缩包验证及未测范围 |
+| [本次发布说明](docs/releases/v0.1.1-japanese-20261016.md) | 日语增强更新、附件与下载说明 |
+| [日语测试报告](docs/releases/JAPANESE_TEST_REPORT_20261016.md) | 本轮源码、exe、模型验证、已知错译及未测范围 |
+| [无损精简说明](docs/releases/LOSSLESS_PACKAGE_REPORT_20261016.md) | 体积对比、逐文件哈希与解压后 exe 自检 |
+| [日语支持](docs/日语支持说明.md) | 方向选择、识别范围与模型构建 |
 | [使用说明](docs/使用说明.md) | 操作、排版与常见问题 |
 | [场景预设](docs/场景预设说明.md) | 保存范围、应用行为和坐标校验 |
 | [游戏兼容](docs/游戏兼容说明.md) | 捕获、字幕、录屏与诊断边界 |

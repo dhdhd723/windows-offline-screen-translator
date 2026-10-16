@@ -114,7 +114,8 @@ class PresetDialog(QDialog):
         row = self.rows[index]
         values = row.values
         self.include_region.setChecked(row.include_region)
-        direction = {"auto": "自动中英互译", "en-zh": "英文 → 中文", "zh-en": "中文 → 英文"}[values["direction"]]
+        direction = {"auto": "自动中英互译", "en-zh": "英文 → 中文", "zh-en": "中文 → 英文",
+                     "ja-zh": "日语 → 简体中文"}[values["direction"]]
         region = values.get("region")
         spatial = (f"保存的选区：{region['width']} × {region['height']}" if region else "保存时没有选区") if row.include_region else "不恢复选区，保留当前区域"
         self.summary.setText(f"{row.name}\n\n{direction} · {'逐行对话' if values['text_layout'] == 'lines' else '连续文本'}\n"

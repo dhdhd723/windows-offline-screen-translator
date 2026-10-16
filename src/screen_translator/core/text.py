@@ -11,6 +11,7 @@ _HAN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _HAN_SPACE = re.compile(r"(?<=[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]) "
                         r"(?=[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff])")
 _LATIN = re.compile(r"[A-Za-z]")
+_KANA = re.compile(r"[\u3041-\u3096\u309d-\u309f\u30a1-\u30fa\u30fd-\u30ff\u31f0-\u31ff]")
 _NUMBERS = re.compile(r"\d+(?:[.,:]\d+)*")
 # Only discard familiar sentence/quote typography. Currency, signs, operators,
 # percentages, slashes and other symbols can change the meaning of a subtitle.
@@ -99,6 +100,10 @@ def is_meaningful_change(previous: str, current: str, threshold: float = 0.94) -
 def choose_direction(text: str, direction: str = "auto") -> str | None:
     value = normalize_text(text)
     han, latin = len(_HAN.findall(value)), len(_LATIN.findall(value))
+    if direction == "ja-zh":
+        # Explicit selection resolves Han-only labels and kana-only dialogue.
+        # Preserve the old auto mode: do not silently reroute English/Chinese.
+        return "ja-zh" if han or latin or _KANA.search(value) else None
     if not han and not latin:
         return None
     if direction in {"zh-en", "en-zh"}:

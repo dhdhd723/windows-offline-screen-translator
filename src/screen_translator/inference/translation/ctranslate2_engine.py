@@ -14,6 +14,7 @@ from ...paths import model_root
 from .. import (InferenceCancelled, InputLimitError, ModelFilesError,
                 checked_path, read_manifest, verify_files)
 from .tokenizer import MarianSentencePieceTokenizer, split_text_for_model
+from .m2m_tokenizer import M2M100JapaneseTokenizer
 
 
 log = logging.getLogger(__name__)
@@ -21,11 +22,14 @@ REQUIRED_FILES = ("config.json", "model.bin", "source.spm", "target.spm", "vocab
 TRANSLATION_POLICY_ID = ("quality-policy-v1|" + SCRIPT_POLICY_ID + "|"
                          + STRUCTURE_POLICY_ID + "|" + TERMS_POLICY_ID
                          + "|beam2-repeat1.05-ngram3-target-tag-none")
+JAPANESE_POLICY_ID = "m2m-ja-zh-v1|" + SCRIPT_POLICY_ID + "|beam2-int8-target-zh"
+JAPANESE_REQUIRED_FILES = ("config.json", "model.bin", "sentencepiece.bpe.model", "vocab.json",
+                           "shared_vocabulary.json", "tokenizer_config.json")
 
 
 def format_translation_output(text: str, direction: str) -> str:
     """Normalize only translated Chinese; callers keep identity prefixes apart."""
-    return to_simplified(text) if direction == "en-zh" else text
+    return to_simplified(text) if direction in {"en-zh", "ja-zh"} else text
 
 
 class CTranslate2Engine:
@@ -40,8 +44,18 @@ class CTranslate2Engine:
             self.root = self.root.parent
         self.cpu_threads = max(1, min(4, int(cpu_threads)))
         self._translators: dict[str, Any] = {}
-        self._tokenizers: dict[str, MarianSentencePieceTokenizer] = {}
+        self._tokenizers: dict[str, MarianSentencePieceTokenizer | M2M100JapaneseTokenizer] = {}
         self._ids: dict[str, str] = {}
+        self._preferred_direction = "en-zh"
+
+    def configure_direction(self, direction: str) -> None:
+        """Called between jobs; keep Japanese and legacy weights mutually exclusive."""
+        self._preferred_direction = "en-zh" if direction == "auto" else direction
+        remove = ([key for key in self._translators if key != "ja-zh"] if direction == "ja-zh"
+                  else ["ja-zh"])
+        for key in remove:
+            self._translators.pop(key, None)
+            self._tokenizers.pop(key, None)
 
     def configure_threads(self, cpu_threads: int) -> None:
         """Called only by the inference worker, between jobs."""
@@ -56,14 +70,18 @@ class CTranslate2Engine:
         if direction not in self._ids:
             entry = read_manifest(self.root).get("translation", {}).get(direction)
             if not entry or not isinstance(entry.get("id"), str) or not entry["id"]:
+                if direction == "ja-zh":
+                    raise ModelFilesError("缺少本地日语翻译模型，请使用日语增强完整包；中英模式仍可使用。")
                 raise ModelFilesError(f"本地 {direction} 翻译模型缺失，请使用包含模型的完整程序包。")
             self._ids[direction] = entry["id"]
         identity = translation_identity(self._ids[direction], direction)
+        if direction == "ja-zh":
+            return identity + "|" + JAPANESE_POLICY_ID
         return identity + "|" + TRANSLATION_POLICY_ID if direction == "en-zh" else identity
 
     @staticmethod
     def _check_direction(direction: str) -> None:
-        if direction not in {"zh-en", "en-zh"}:
+        if direction not in {"zh-en", "en-zh", "ja-zh"}:
             raise ValueError(f"Unsupported translation direction: {direction}")
 
     def _initialize(self, direction: str) -> None:
@@ -73,9 +91,14 @@ class CTranslate2Engine:
         entry = read_manifest(self.root).get("translation", {}).get(direction)
         if (not entry or not entry.get("path") or not isinstance(entry.get("id"), str)
                 or not entry["id"]):
+            if direction == "ja-zh":
+                raise ModelFilesError("缺少本地日语翻译模型，请使用日语增强完整包；中英模式仍可使用。")
             raise ModelFilesError(f"本地 {direction} 翻译模型缺失，请使用包含模型的完整程序包。")
         folder = checked_path(self.root, entry["path"])
-        required = [f"{entry['path']}/{filename}" for filename in REQUIRED_FILES]
+        if direction == "ja-zh" and entry.get("backend") != "m2m100-ja-zh-v1":
+            raise ModelFilesError("日语模型包格式不兼容，请使用匹配的日语增强完整包。")
+        names = JAPANESE_REQUIRED_FILES if direction == "ja-zh" else REQUIRED_FILES
+        required = [f"{entry['path']}/{filename}" for filename in names]
         # CT2 supports either separate or shared converted vocabularies.
         vocab_names = ("source_vocabulary.json", "target_vocabulary.json")
         if (folder / "shared_vocabulary.json").is_file():
@@ -87,7 +110,8 @@ class CTranslate2Engine:
         except ImportError as exc:
             raise ModelFilesError("翻译运行组件缺失，请重新解压完整程序包。") from exc
         try:
-            tokenizer = MarianSentencePieceTokenizer(folder)
+            tokenizer = M2M100JapaneseTokenizer(folder) if direction == "ja-zh" else MarianSentencePieceTokenizer(folder)
+            self.configure_direction(direction)
             translator = ctranslate2.Translator(
                 str(folder), device="cpu", compute_type="int8",
                 inter_threads=1, intra_threads=self.cpu_threads, max_queued_batches=1,
@@ -99,8 +123,9 @@ class CTranslate2Engine:
         self._ids[direction] = entry["id"]
         log.info("Initialized offline translator: %s", entry["id"])
 
-    def warmup(self, direction: str = "en-zh") -> None:
-        self.translate("Hello." if direction == "en-zh" else "你好。", direction)
+    def warmup(self, direction: str | None = None) -> None:
+        direction = self._preferred_direction if direction is None else direction
+        self.translate({"en-zh": "Hello.", "zh-en": "你好。", "ja-zh": "こんにちは。"}[direction], direction)
 
     def translate_cancellable(self, text: str, direction: str,
                               cancel_check: Callable[[], bool]) -> str:
@@ -143,7 +168,8 @@ class CTranslate2Engine:
                 translated.append(" ".join(output for output in outputs if output))
             else:
                 chunks = split_text_for_model(paragraph, tokenizer, max_tokens=192)
-                translated.append(" ".join(self._translate_chunk(chunk, direction,
+                joiner = "" if direction == "ja-zh" else " "
+                translated.append(joiner.join(self._translate_chunk(chunk, direction,
                     cancel_check=cancel_check) for chunk in chunks))
         self._check_cancel(cancel_check)
         return format_translation_output("\n".join(translated).strip(), direction)
@@ -181,14 +207,18 @@ class CTranslate2Engine:
         tokenizer = self._tokenizers[direction]
         translator = self._translators[direction]
         source = tokenizer.encode(text)
+        extras = {"target_prefix": [list(tokenizer.target_prefix)]} if direction == "ja-zh" else {}
         result = translator.translate_batch(
             [source], beam_size=2, max_input_length=192,
             max_decoding_length=384, return_end_token=True,
             repetition_penalty=1.05, no_repeat_ngram_size=3,
+            **extras,
         )[0]
         if not result.hypotheses or not result.hypotheses[0]:
             raise RuntimeError("本地翻译没有返回结果，请重试或缩小翻译区域。")
         tokens = result.hypotheses[0]
+        if direction == "ja-zh" and tokens[0] != "__zh__":
+            raise RuntimeError("日语模型未返回指定中文方向，请检查本地模型包。")
         if len(tokens) >= 384 and tokens[-1] != tokenizer.eos:
             # If output reaches the cap, split and retry rather than silently
             # displaying a translated prefix of the input.

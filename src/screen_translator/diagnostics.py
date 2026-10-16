@@ -82,11 +82,16 @@ def run_self_test() -> dict:
             report["output_policy"] = evaluate_output_policy(translator)
             from .core.chat_diagnostics import evaluate_chat_translation
             report["chat_translation"] = evaluate_chat_translation(ocr, translator, text_fixture)
+            from .inference import read_manifest
+            if "ja-zh" in read_manifest(model_root()).get("translation", {}):
+                from .inference.translation.japanese_diagnostics import evaluate_japanese
+                report["japanese_translation"] = evaluate_japanese(ocr, translator, text_fixture)
             report["network_attempts"] = attempts.copy()
             report["passed"] = (not attempts and all(case["passed"] for case in report["tests"])
                                 and report["translation_quality"]["passed_required_scope"]
                                 and report["output_policy"]["passed"]
-                                and report["chat_translation"]["passed"])
+                                and report["chat_translation"]["passed"]
+                                and report.get("japanese_translation", {}).get("passed", True))
     except Exception as exc:
         logging.exception("Offline diagnostics failed")
         report["error"] = f"{type(exc).__name__}: {exc}"

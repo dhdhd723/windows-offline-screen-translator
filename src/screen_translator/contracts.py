@@ -66,7 +66,7 @@ class Settings:
         if values.get("overlay_position"):
             values["overlay_position"] = tuple(values["overlay_position"])
         obj = cls(**values)
-        if obj.direction not in {"auto", "zh-en", "en-zh"}:
+        if obj.direction not in {"auto", "zh-en", "en-zh", "ja-zh"}:
             obj.direction = "auto"
         if not isinstance(obj.text_layout, str) or obj.text_layout not in {"continuous", "lines"}:
             obj.text_layout = "continuous"

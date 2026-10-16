@@ -89,10 +89,16 @@ class SettingsDialog(QDialog):
         display_form.setVerticalSpacing(16)
         self.direction = QComboBox()
         for text, data in (("自动判断中英方向", "auto"),
-                           ("中文 → 英文", "zh-en"), ("英文 → 中文", "en-zh")):
+                           ("中文 → 英文", "zh-en"), ("英文 → 中文", "en-zh"),
+                           ("日语 → 简体中文（需日语模型包）", "ja-zh")):
             self.direction.addItem(text, data)
         self.direction.setCurrentIndex(max(0, self.direction.findData(settings.direction)))
         display_form.addRow("翻译方向", self.direction)
+        japanese_hint = QLabel("日语请手动选择；自动模式仍只处理中英。\n"
+                               "日语增强包首次翻译需加载模型，优先框选横排清晰文字。")
+        japanese_hint.setWordWrap(True)
+        japanese_hint.setStyleSheet("color: #64748b; font-size: 12px;")
+        display_form.addRow(japanese_hint)
         self.text_layout = QComboBox()
         for text, data in (("连续文本（段落／长句）", "continuous"),
                            ("逐行对话（聊天／Roblox）", "lines")):
