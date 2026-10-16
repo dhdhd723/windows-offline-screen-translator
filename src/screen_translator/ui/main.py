@@ -35,6 +35,7 @@ class MainUI(QObject):
     quit_requested = Signal()
     settings_changed = Signal(object)
     settings_opening = Signal()
+    hotkey_recording_changed = Signal(bool)
 
     def __init__(self, settings: Settings, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -65,7 +66,7 @@ class MainUI(QObject):
         self.cancel_select_action.triggered.connect(self.cancel_selection)
         self.toggle_action = self.menu.addAction("开启持续翻译")
         self.toggle_action.triggered.connect(self.toggle_requested.emit)
-        self.clear_action = self.menu.addAction("清空翻译结果")
+        self.clear_action = self.menu.addAction("清空并停止翻译")
         self.clear_action.triggered.connect(self.clear_requested.emit)
         self.hide_action = self.menu.addAction("临时隐藏字幕")
         self.hide_action.setCheckable(True)
@@ -105,7 +106,7 @@ class MainUI(QObject):
         self.select_action.setText("框选翻译区域    " + binding("select"))
         self.toggle_action.setText(("停止持续翻译    " if self.running else "开启持续翻译    ")
                                   + binding("toggle"))
-        self.clear_action.setText("清空翻译结果    " + binding("clear"))
+        self.clear_action.setText("清空并停止翻译    " + binding("clear"))
         self.hide_action.setText("临时隐藏字幕    Esc" if self.settings.esc_enabled else "临时隐藏字幕")
 
     def set_effective_hotkeys(self, bindings: dict[str, str]) -> None:
@@ -242,13 +243,15 @@ class MainUI(QObject):
             return
         dialog = SettingsDialog(self.settings)
         self._settings_dialog = dialog
+        dialog.hotkey_recording_changed.connect(self.hotkey_recording_changed.emit)
         dialog.finished.connect(lambda result: self._settings_finished(dialog, result))
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
 
     def _settings_finished(self, dialog: SettingsDialog, result: int) -> None:
-        if result == QDialog.DialogCode.Accepted:
+        self.hotkey_recording_changed.emit(False)
+        if not self._closed and result == QDialog.DialogCode.Accepted:
             self.settings_changed.emit(dialog.editable_changes())
         if self._settings_dialog is dialog:
             self._settings_dialog = None

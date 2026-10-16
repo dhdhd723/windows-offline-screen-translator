@@ -58,9 +58,16 @@ class _HotkeyFilter(QAbstractNativeEventFilter):
     def nativeEventFilter(self, event_type, message):
         if sys.platform == "win32":
             msg = _MSG.from_address(int(message))
-            if msg.message == 0x0312 and int(msg.wParam) in self.owner._registered:
-                self.owner.action.emit(self.owner._registered[int(msg.wParam)])
-                return True, 0
+            hotkey_id = int(msg.wParam)
+            if msg.message == 0x0312 and hotkey_id in (0xB100, 0xB101, 0xB102):
+                # Windows can have already queued this message when recording
+                # unregisters the shortcuts. Consume it even with an empty map.
+                if self.owner._input_suspended:
+                    return True, 0
+                action = self.owner._registered.get(hotkey_id)
+                if action is not None:
+                    self.owner.action.emit(action)
+                    return True, 0
         return False, 0
 
 
@@ -68,6 +75,7 @@ class WindowsHotkeys(QObject):
     action = Signal(str)
     error = Signal(str)
     binding_changed = Signal(str, str)
+    registrations_changed = Signal(object)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -81,9 +89,17 @@ class WindowsHotkeys(QObject):
         self._monitoring = False
         self._selecting = False
         self._escape_down = False
+        self._closed = False
+        self._recording = False
+        self._resume_pending = False
+        self._resume_keys: set[int] = set()
+        self._resume_error_reported = False
         self._timer = QTimer(self)
         self._timer.setInterval(35)
         self._timer.timeout.connect(self._poll_escape)
+        self._resume_timer = QTimer(self)
+        self._resume_timer.setInterval(35)
+        self._resume_timer.timeout.connect(self._poll_recording_release)
         self._installed = False
         self._user32 = None
         if sys.platform == "win32":
@@ -94,8 +110,13 @@ class WindowsHotkeys(QObject):
             self._user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
             self._user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
             self._user32.GetAsyncKeyState.restype = ctypes.c_short
+            self._user32.PeekMessageW.argtypes = [ctypes.POINTER(_MSG), wintypes.HWND,
+                                                 wintypes.UINT, wintypes.UINT, wintypes.UINT]
+            self._user32.PeekMessageW.restype = wintypes.BOOL
 
     def start(self, settings: Settings) -> None:
+        if self._closed:
+            return
         app = QApplication.instance()
         if app is not None and not self._installed:
             app.installNativeEventFilter(self._filter)
@@ -104,11 +125,26 @@ class WindowsHotkeys(QObject):
 
     @property
     def effective_hotkeys(self) -> dict[str, str]:
-        """Successful OS registrations, which may differ from requested defaults."""
+        """Effective bindings, retained while native registration is suspended."""
         return self._effective_hotkeys.copy()
 
+    @property
+    def _input_suspended(self) -> bool:
+        return self._closed or self._recording or self._resume_pending
+
     def update(self, settings: Settings) -> None:
+        if self._closed:
+            return
         self._settings = Settings.from_dict(settings.to_dict())
+        if self._recording or self._resume_pending:
+            self._remember_release_keys()
+            return
+        self._register_settings()
+
+    def _register_settings(self) -> None:
+        if self._input_suspended:
+            return
+        settings = self._settings
         self._unregister()
         taken: set[tuple[int, int]] = set()
         labels = {"select": "框选", "toggle": "启停", "clear": "清空"}
@@ -120,6 +156,8 @@ class WindowsHotkeys(QObject):
             except ValueError:
                 pass
         for index, action in enumerate(("select", "toggle", "clear")):
+            if self._input_suspended:
+                break
             value = settings.hotkeys.get(action, "")
             try:
                 combination = parse_hotkey(value)
@@ -155,18 +193,103 @@ class WindowsHotkeys(QObject):
             except ValueError as exc:
                 self.error.emit(f"{labels[action]}快捷键 {value}：{exc}。可从托盘菜单操作或修改快捷键。")
         self._update_escape_timer()
+        if not self._input_suspended:
+            self.registrations_changed.emit(self.effective_hotkeys)
+
+    def set_recording(self, enabled: bool) -> None:
+        """Release our global shortcuts while a focused widget records a chord.
+
+        Restoring registrations is deferred until held keys are released, so
+        ending or cancelling recording cannot itself trigger a global action.
+        This reads key state only during that short release guard; it is not a
+        global keyboard recorder.
+        """
+        if self._closed:
+            return
+        if enabled:
+            if self._recording:
+                return
+            self._recording = True
+            self._resume_pending = False
+            self._resume_timer.stop()
+            self._resume_error_reported = False
+            self._remember_release_keys()
+            self._timer.stop()
+            self._escape_down = False
+            self._unregister(preserve_effective=True)
+            return
+        if not self._recording:
+            return
+        self._recording = False
+        self._remember_release_keys()
+        if self._user32 is None:
+            self._resume_keys.clear()
+            self._register_settings()
+            return
+        self._resume_pending = True
+        # Always allow an event-loop turn to consume queued WM_HOTKEY messages.
+        self._resume_timer.start()
+
+    def _remember_release_keys(self) -> None:
+        # Generic modifier virtual keys include both left and right variants.
+        self._resume_keys.update((0x10, 0x11, 0x12, 0x5B, 0x5C, 0x1B))
+        for value in (*self._effective_hotkeys.values(), *self._settings.hotkeys.values()):
+            try:
+                self._resume_keys.add(parse_hotkey(value)[1])
+            except ValueError:
+                pass
+
+    def _poll_recording_release(self) -> None:
+        if self._closed or self._recording or not self._resume_pending:
+            self._resume_timer.stop()
+            return
+        if self._user32 is not None:
+            try:
+                if any(self._user32.GetAsyncKeyState(key) & 0x8000
+                       for key in self._resume_keys):
+                    return
+                self._discard_queued_hotkeys()
+            except (OSError, RuntimeError) as exc:
+                # Failing safely is preferable to activating a still-held chord.
+                # Keep the non-blocking timer running in case the failure clears.
+                if not self._resume_error_reported:
+                    self._resume_error_reported = True
+                    self.error.emit(f"暂时无法确认按键已松开，快捷键将稍后恢复：{exc}")
+                return
+        self._resume_timer.stop()
+        self._resume_pending = False
+        self._resume_keys.clear()
+        self._resume_error_reported = False
+        self._register_settings()
+
+    def _discard_queued_hotkeys(self) -> None:
+        peek = getattr(self._user32, "PeekMessageW", None)
+        if peek is None:
+            return
+        message = _MSG()
+        # There are only three MOD_NOREPEAT bindings. Bound the drain even if a
+        # faulty native adapter keeps reporting messages, and retry next tick.
+        for _ in range(64):
+            if not peek(ctypes.byref(message), self._hwnd, 0x0312, 0x0312, 0x0001):
+                return
+        raise RuntimeError("快捷键消息队列仍有待清理消息")
 
     def set_monitoring(self, enabled: bool) -> None:
+        if self._closed:
+            return
         self._monitoring = bool(enabled)
         self._update_escape_timer()
 
     def set_selecting(self, enabled: bool) -> None:
+        if self._closed:
+            return
         self._selecting = bool(enabled)
         if self._user32 is not None:
             self._escape_down = bool(self._user32.GetAsyncKeyState(0x1B) & 0x8000)
 
     def _update_escape_timer(self) -> None:
-        if self._monitoring and self._settings.esc_enabled and self._user32 is not None:
+        if (not self._input_suspended and self._monitoring
+                and self._settings.esc_enabled and self._user32 is not None):
             self._escape_down = bool(self._user32.GetAsyncKeyState(0x1B) & 0x8000)
             self._timer.start()
         else:
@@ -174,7 +297,7 @@ class WindowsHotkeys(QObject):
             self._escape_down = False
 
     def _poll_escape(self) -> None:
-        if self._user32 is None:
+        if self._input_suspended or self._user32 is None:
             return
         down = bool(self._user32.GetAsyncKeyState(0x1B) & 0x8000)
         app = QApplication.instance()
@@ -185,15 +308,23 @@ class WindowsHotkeys(QObject):
             self.action.emit("hide")
         self._escape_down = down
 
-    def _unregister(self) -> None:
+    def _unregister(self, *, preserve_effective: bool = False) -> None:
         if self._user32 is not None:
             for hotkey_id in tuple(self._registered):
                 self._user32.UnregisterHotKey(self._hwnd, hotkey_id)
         self._registered.clear()
-        self._effective_hotkeys.clear()
+        if not preserve_effective:
+            self._effective_hotkeys.clear()
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self._timer.stop()
+        self._resume_timer.stop()
+        self._recording = False
+        self._resume_pending = False
+        self._resume_keys.clear()
         self._unregister()
         app = QApplication.instance()
         if app is not None and self._installed:

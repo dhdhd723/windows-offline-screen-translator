@@ -134,3 +134,17 @@ def test_evaluator_detects_changed_ordinary_rows_beneath_a_correct_title(monkeyp
     assert "ordinary_menu_rows_changed" in menu["errors"]
     assert report["layout"]["passed"] == report["layout"]["total"] - 1
     assert report["passed_required_scope"] is False
+
+
+def test_declared_new_output_policy_keeps_row_and_exact_title_guards(monkeypatch):
+    monkeypatch.setattr(quality, "_raw_model_translation", _baseline)
+    translator = FakeTranslator({"offline-english": "翻译支持离线运行。",
+                                 "title-menu-rows": "星露谷物语 NEW LOAD EXIT"})
+    translator.quality_policy_id = "declared-test-policy"
+    report = quality.evaluate_translation_quality(translator)
+    changed = next(case for case in report["cases"] if case["name"] == "offline-english")
+    assert changed["checks_passed"] and changed["unmatched_model_output_unchanged"] is False
+    assert report["raw_output_comparison_observational"]
+    menu = next(case for case in report["cases"] if case["name"] == "title-menu-rows")
+    assert "row_count_mismatch" in menu["errors"]
+    assert report["passed_required_scope"] is False

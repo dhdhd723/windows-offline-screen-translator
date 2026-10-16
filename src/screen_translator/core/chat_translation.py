@@ -15,10 +15,11 @@ from screen_translator.core.chat_slang import (
     chat_slang_fingerprint, expand_chat_slang, sanitize_overrides,
 )
 from screen_translator.core.text import normalize_layout_text
+from screen_translator.core.chinese_script import SCRIPT_POLICY_ID, to_simplified
 from screen_translator.inference import InferenceCancelled, InputLimitError
 
 
-CHAT_TRANSLATION_VERSION = 1
+CHAT_TRANSLATION_VERSION = 3
 # Selected meanings match the existing, explicitly documented English glossary.
 # These are reliable standalone-message answers, not replacements in sentences.
 BUILTIN_CHAT_ZH = {
@@ -37,13 +38,18 @@ BUILTIN_CHAT_ZH = {
     "smh": "真让人失望", "gg": "打得不错",
     "glhf": "祝你好运，玩得开心", "ggwp": "打得不错，表现很好",
     "omg": "天啊", "fyi": "供你参考", "asap": "尽快",
+    "sm1": "有人", "l8r": "回头见", "cya": "再见", "cyaa": "再见",
+    "prolly": "大概吧", "cuz": "因为", "bc": "因为", "ppl": "人们",
+    "pic": "图片", "rn": "现在", "fr": "真的", "hbu": "你呢",
+    "yk": "你知道的", "def": "肯定", "istg": "我发誓",
+    "tytl": "回头聊", "mdfk": "混蛋（粗口）", "asf": "……得要命（粗俗强调）",
 }
 
 
 def chat_translation_fingerprint(overrides: object = None) -> str:
     """Do not reuse pre-adapter expansions that translated names or echoed ty."""
     return (f"chat-translation-v{CHAT_TRANSLATION_VERSION}|"
-            + chat_slang_fingerprint(True, overrides))
+            + chat_slang_fingerprint(True, overrides) + "|" + SCRIPT_POLICY_ID)
 
 # Only a single short identity, optionally bracketed or with one channel tag.
 # Arbitrary phrases before a colon are not accepted as usernames.
@@ -147,7 +153,11 @@ def _model_translate(translator, text: str, direction: str,
     _check_cancel(cancel_check)
     if not isinstance(result, str) or not result.strip():
         raise RuntimeError("本地模型返回空译文")
-    return result.strip()
+    result = result.strip()
+    # Phrase exceptions are not universally idempotent. A backend declaring
+    # finalized output must never be converted a second time.
+    return (to_simplified(result) if direction == "en-zh"
+            and not getattr(translator, "formats_simplified_output", False) else result)
 
 
 @dataclass(frozen=True)
@@ -177,7 +187,11 @@ class ChatTranslationPlan:
             answer = row.direct
             if answer is None:
                 answer = _model_translate(translator, row.expanded, direction, cancel_check)
+            elif direction == "en-zh":
+                answer = to_simplified(answer)
             _check_cancel(cancel_check)
+            # A user's name is not a translated span: keep its exact glyphs,
+            # including Traditional Chinese names, while normalizing the body.
             translated.append(row.prefix + answer)
         _check_cancel(cancel_check)
         return "\n".join(translated)

@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from ...contracts import OCRResult, TextLine
+from ...core.ocr_overlap import plan_overlap_groups
+from ...core.ocr_overlap_text import accept_overlap_text, overlap_text_eligible
 from ...paths import model_root
 from .. import ModelFilesError, checked_path, read_manifest, verify_files
 
 
 log = logging.getLogger(__name__)
+OCR_OVERLAP_POLICY_ID = "adjacent-crop-reread-v1"
+MAX_OVERLAP_RETRIES = 12
 
 
 def _same_text_row(first: TextLine, second: TextLine) -> bool:
@@ -127,6 +132,76 @@ class RapidOCREngine:
         # warmup has no boxes, so use the public recognition-only path once.
         self._engine(blank, use_det=False, use_cls=False, use_rec=True, return_word_box=False)
 
+    def _assemble_rows(self, rows: list[list[TextLine]], image: np.ndarray) -> list[str]:
+        """Reread only suspicious adjacent crops; never rewrite raw OCR evidence.
+
+        Geometry can indicate overlapping glyphs, not prove duplication. The
+        recognizer must independently confirm the joint pixel crop and a
+        conservative text guard must accept it. Failed/uncertain rereads leave
+        the original text intact. No extra detection pass or whole-row fallback.
+        """
+        texts = [" ".join(line.text for line in row) for row in rows]
+        recognize = getattr(self._engine, "recognize_txt", None)
+        if not callable(recognize):
+            return texts
+        pending, crops = [], []
+        height, width = image.shape[:2]
+        for row_index, row in enumerate(rows):
+            if len(pending) >= MAX_OVERLAP_RETRIES:
+                break
+            groups = plan_overlap_groups(row, max_groups=MAX_OVERLAP_RETRIES - len(pending))
+            for group in groups:
+                fragments = tuple(row[index].text for index in group.indices)
+                if not overlap_text_eligible(fragments):
+                    continue
+                left, top, right, bottom = group.bounds
+                x0, y0 = max(0, math.floor(left) - 2), max(0, math.floor(top) - 2)
+                x1, y1 = min(width, math.ceil(right) + 2), min(height, math.ceil(bottom) + 2)
+                if x1 - x0 < 6 or y1 - y0 < 6:
+                    continue
+                crop = np.ascontiguousarray(image[y0:y1, x0:x1])
+                if not crop.size:
+                    continue
+                baseline = sum(row[index].confidence * len(row[index].text) for index in group.indices)
+                baseline /= max(1, sum(len(row[index].text) for index in group.indices))
+                crops.append(crop)
+                pending.append((row_index, group.indices, fragments, baseline))
+        if not crops:
+            return texts
+        try:
+            result = recognize(crops)
+            candidates, scores = getattr(result, "txts", None), getattr(result, "scores", None)
+            if candidates is None or scores is None or len(candidates) != len(pending) or len(scores) != len(pending):
+                return texts
+        except Exception:
+            # Optional repair must not turn successful OCR into a frame error.
+            # Neither crop pixels nor recognized text are logged.
+            log.debug("Optional adjacent-crop OCR reread unavailable")
+            return texts
+        replacements: dict[int, dict[int, tuple[tuple[int, ...], str]]] = {}
+        for (row_index, indices, fragments, baseline), candidate, score in zip(pending, candidates, scores):
+            try:
+                if not isinstance(candidate, str) or not accept_overlap_text(fragments, candidate, float(score), baseline):
+                    continue
+            except (TypeError, ValueError, OverflowError):
+                continue
+            replacements.setdefault(row_index, {})[indices[0]] = (indices, candidate.strip())
+        for row_index, groups in replacements.items():
+            consumed: set[int] = set()
+            pieces = []
+            for index, line in enumerate(rows[row_index]):
+                if index in consumed:
+                    continue
+                replacement = groups.get(index)
+                if replacement:
+                    indices, candidate = replacement
+                    consumed.update(indices)
+                    pieces.append(candidate)
+                else:
+                    pieces.append(line.text)
+            texts[row_index] = " ".join(pieces)
+        return texts
+
     def recognize(self, image_bgr: np.ndarray) -> OCRResult:
         if image_bgr is None or image_bgr.size == 0:
             return OCRResult("")
@@ -140,6 +215,7 @@ class RapidOCREngine:
         elif image.shape[2] == 4:
             image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
         image = np.ascontiguousarray(image, dtype=np.uint8)
+        physical_image = image
         original_h, original_w = image.shape[:2]
         scale = 1.0
         if original_h < 120 and original_w <= 1280:
@@ -184,6 +260,6 @@ class RapidOCREngine:
         for row in rows:
             row.sort(key=lambda line: min((point[0] for point in line.box), default=0))
             ordered.extend(row)
-        text_rows = [" ".join(line.text for line in row) for row in rows]
+        text_rows = self._assemble_rows(rows, physical_image)
         confidence = sum(line.confidence * len(line.text) for line in ordered) / max(1, sum(len(line.text) for line in ordered))
         return OCRResult("\n".join(text_rows), tuple(ordered), confidence)

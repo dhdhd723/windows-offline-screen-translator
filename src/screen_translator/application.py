@@ -26,6 +26,18 @@ def hotkey_status(message: str, configured: Mapping[str, str],
     return message
 
 
+def clear_translation_session(pipeline, ui, hotkeys) -> None:
+    """Stop first, invalidate pending output, then empty the visible caption.
+
+    Preserve the region and loaded models/cache for a quick explicit resume.
+    Pipeline generations prevent old work from repopulating the cleared UI.
+    """
+    pipeline.stop()
+    pipeline.clear()
+    ui.clear_result()
+    hotkeys.set_monitoring(False)
+
+
 def configure_logging() -> None:
     root = data_root() / "logs"
     root.mkdir(exist_ok=True)
@@ -312,7 +324,7 @@ def main(argv: list[str] | None = None) -> int:
         if pipeline.is_running:
             pipeline.stop()
             hotkeys.set_monitoring(has_caption)
-            status("已停止；当前字幕保留，Alt+C 可清空")
+            status(f"已停止；当前字幕保留，{settings.hotkeys['clear']} 可清空")
             return
         missing = check_models()
         if missing:
@@ -380,13 +392,12 @@ def main(argv: list[str] | None = None) -> int:
             status("已恢复原区域监控" + ("；字幕保持隐藏" if hidden else ""))
 
     def clear() -> None:
-        nonlocal has_caption
+        nonlocal has_caption, resume_after_selection
         dismiss_startup_card()
-        pipeline.clear()
+        clear_translation_session(pipeline, ui, hotkeys)
         has_caption = False
-        ui.clear_result()
-        hotkeys.set_monitoring(pipeline.is_running)
-        status("字幕已清空；文字变化后显示新译文" if pipeline.is_running else "字幕已清空")
+        resume_after_selection = False
+        status(f"字幕已清空，持续翻译已停止；{settings.hotkeys['toggle']} 恢复原区域翻译")
 
     def hide() -> None:
         nonlocal hidden
@@ -467,6 +478,8 @@ def main(argv: list[str] | None = None) -> int:
     ui.quit_requested.connect(quit_app)
     ui.settings_changed.connect(apply_settings)
     ui.settings_opening.connect(dismiss_startup_card)
+    ui.hotkey_recording_changed.connect(hotkeys.set_recording)
+    hotkeys.registrations_changed.connect(ui.set_effective_hotkeys)
     ui.menu.aboutToShow.connect(dismiss_startup_card)
     ui.tray.activated.connect(dismiss_startup_card)
     actions = {"select": ui.select_region, "toggle": toggle, "clear": clear, "hide": hide}
@@ -496,7 +509,7 @@ def main(argv: list[str] | None = None) -> int:
     monitor_timer.timeout.connect(validate_current_region)
     monitor_timer.start()
     status(f"已就绪：{settings.hotkeys['select']} 框选，"
-           f"{settings.hotkeys['toggle']} 开始/停止，{settings.hotkeys['clear']} 清空")
+           f"{settings.hotkeys['toggle']} 开始/停止，{settings.hotkeys['clear']} 清空并停止")
 
     def exception_hook(kind: type, value: BaseException, tb: object) -> None:
         logging.getLogger(__name__).error("Unhandled error", exc_info=(kind, value, tb))

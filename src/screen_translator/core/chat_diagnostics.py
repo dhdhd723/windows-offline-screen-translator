@@ -11,6 +11,8 @@ from screen_translator.storage.translation_cache import TranslationCache
 
 def evaluate_chat_translation(ocr, translator, image_factory) -> dict:
     class CountedTranslator:
+        formats_simplified_output = getattr(translator, "formats_simplified_output", False)
+
         def __init__(self):
             self.calls = []
 
@@ -38,7 +40,10 @@ def evaluate_chat_translation(ocr, translator, image_factory) -> dict:
     standalone_no_model = not counted.calls
     pipeline_cases = []
     fixtures = (("ty", "谢谢"), ("Fixture_User: np", "Fixture_User: 没问题"),
-                ("Fixture_User: take lead", "Fixture_User: 带头"))
+                ("Fixture_User: take lead", "Fixture_User: 带头")) + tuple(
+        (token.upper(), BUILTIN_CHAT_ZH[token]) for token in (
+            "sm1", "l8r", "cya", "cyaa", "prolly", "cuz", "bc", "ppl", "pic",
+            "rn", "fr", "hbu", "yk", "def", "istg", "tytl", "mdfk", "asf"))
     for layout in ("continuous", "lines"):
         for source, expected in fixtures:
             image = image_factory(source)
@@ -88,4 +93,4 @@ def evaluate_chat_translation(ocr, translator, image_factory) -> dict:
             "standalone_no_model_calls": standalone_no_model,
             "pipeline_cases": pipeline_cases, "desktop_captured": False,
             "actual_game_tested": False,
-            "boundary": "Synthetic images through local OCR and real pipeline. Known standalone terms and named command only; not general slang accuracy or live Roblox validation."}
+            "boundary": "Synthetic images through local OCR and real pipeline. New terms use uppercase fixtures; lowercase l8r may be misread as 18r/I8r and is not silently corrected. Known standalone terms and named command only; not general slang accuracy or live Roblox validation."}

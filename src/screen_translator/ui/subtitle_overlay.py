@@ -118,7 +118,7 @@ class SubtitleOverlay(QWidget):
         if not text:
             return ""
         metrics = QFontMetrics(font)
-        suffix = "…〔原文截断〕" if source else "…〔已截断〕"
+        suffix = "…〔原文仅显示部分〕" if source else "…〔已截断〕"
 
         def fits(candidate: str) -> bool:
             rect = metrics.boundingRect(QRect(0, 0, width, 100000),

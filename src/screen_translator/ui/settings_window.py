@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-                               QDoubleSpinBox, QFormLayout, QLabel, QLineEdit,
+                               QDoubleSpinBox, QFormLayout, QLabel,
                                QMessageBox, QPlainTextEdit, QSlider, QSpinBox, QTabWidget,
                                QVBoxLayout, QWidget)
 
@@ -12,6 +12,7 @@ from screen_translator.contracts import Settings
 from screen_translator.core.chat_slang import BUILTIN_CHAT_SLANG, sanitize_overrides
 from screen_translator.core.chat_translation import BUILTIN_CHAT_ZH
 from screen_translator.platform.windows.hotkeys import parse_hotkey
+from screen_translator.ui.hotkey_editor import HotkeyEditor
 
 
 EDITABLE_SETTING_FIELDS = frozenset({
@@ -68,6 +69,8 @@ def merge_settings_changes(current: Settings, changes: Mapping[str, object]) -> 
 
 
 class SettingsDialog(QDialog):
+    hotkey_recording_changed = Signal(bool)
+
     def __init__(self, settings: Settings) -> None:
         super().__init__()
         self._original = Settings.from_dict(settings.to_dict())
@@ -140,7 +143,8 @@ class SettingsDialog(QDialog):
         chat_layout.addWidget(self.chat_slang_enabled)
         chat_hint = QLabel("翻译方向为英文 → 中文时生效，开关默认启用。\n"
                            "两种文字排版均生效；独立的内置缩写直接显示中文，长句先展开再翻译。\n"
-                           "明确的昵称冒号前缀原样保留；未知词交给模型，词义仍可能不准确。")
+                           "明确的昵称冒号前缀原样保留；未知词交给模型，词义仍可能不准确。\n"
+                           "rn、fr、bc、def 按聊天含义处理；MDFK、ASF 含粗俗语气，多义场景可关闭此功能。")
         chat_hint.setWordWrap(True)
         chat_hint.setStyleSheet("color: #64748b; font-size: 12px;")
         chat_layout.addWidget(chat_hint)
@@ -162,6 +166,10 @@ class SettingsDialog(QDialog):
             f"{key} = {value} | 独立消息：{BUILTIN_CHAT_ZH.get(key, '交给模型')}"
             for key, value in sorted(BUILTIN_CHAT_SLANG.items())))
         builtin_layout.addWidget(self.chat_slang_builtin_list)
+        numeric_hint = QLabel("数字 2 仅在 want 2 play、talk 2 you 等明确短语中按 to 处理；\n"
+                              "单独的 2 和数量不替换。TYTL 按用户确认兼容为“回头聊”。")
+        numeric_hint.setWordWrap(True)
+        builtin_layout.addWidget(numeric_hint)
         glossary_tabs.addTab(builtin_page, "内置词表")
         custom_page = QWidget()
         custom_layout = QVBoxLayout(custom_page)
@@ -184,12 +192,25 @@ class SettingsDialog(QDialog):
         controls = QWidget()
         controls_form = QFormLayout(controls)
         controls_form.setVerticalSpacing(14)
-        self.hotkeys: dict[str, QLineEdit] = {}
-        for key, label in (("select", "框选区域"), ("toggle", "开启 / 停止"), ("clear", "清空结果")):
-            field = QLineEdit(settings.hotkeys.get(key, ""))
-            field.setPlaceholderText("例如 Alt+R 或 Ctrl+Shift+R")
+        self.hotkeys: dict[str, HotkeyEditor] = {}
+        for key, label in (("select", "框选区域"), ("toggle", "开启 / 恢复 / 停止"), ("clear", "清空并停止")):
+            field = HotkeyEditor(settings.hotkeys.get(key, ""))
+            field.set_validator(lambda value, action=key: self._validate_recorded_hotkey(action, value))
+            field.recording_changed.connect(lambda active, editor=field: self._hotkey_recording(editor, active))
+            field.validation_error.connect(self._hotkey_validation_error)
+            field.key_recorded.connect(lambda value: self.hotkey_hint.setText(
+                f"已录入 {value}；点击保存后生效。"))
             controls_form.addRow(label, field)
             self.hotkeys[key] = field
+        self.hotkey_hint = QLabel("点击“修改”，按住 Ctrl / Alt / Shift / Win，再按一个键，松开后完成。\n"
+                                 "无需输入文字；录入时按 Esc 或点击取消可保留原键。保存后才生效。")
+        self.hotkey_hint.setWordWrap(True)
+        self.hotkey_hint.setStyleSheet("color: #64748b; font-size: 12px;")
+        controls_form.addRow(self.hotkey_hint)
+        action_hint = QLabel("清空并停止会保留翻译选区；按“开启 / 恢复 / 停止”的快捷键即可恢复。")
+        action_hint.setWordWrap(True)
+        action_hint.setStyleSheet("color: #64748b; font-size: 12px;")
+        controls_form.addRow(action_hint)
         self.esc = QCheckBox("监控期间按 Esc 隐藏 / 恢复字幕")
         self.esc.setChecked(settings.esc_enabled)
         controls_form.addRow(self.esc)
@@ -204,7 +225,9 @@ class SettingsDialog(QDialog):
         startup_hint.setWordWrap(True)
         startup_hint.setStyleSheet("color: #64748b; font-size: 12px;")
         controls_form.addRow(startup_hint)
-        hint = QLabel("Esc 会继续传递给当前程序。关闭此选项后仍可用托盘菜单隐藏字幕。\n快捷键如果被其他程序占用，保存后会显示提示。")
+        hint = QLabel("录入期间暂停本程序的全局快捷键，避免误触发框选或翻译。\n"
+                      "Esc 会继续传递给当前程序。关闭此选项后仍可用托盘菜单隐藏字幕。\n"
+                      "系统保留组合键或被其他程序占用的快捷键可能不可用，保存后会显示提示。")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #64748b; font-size: 12px;")
         controls_form.addRow(hint)
@@ -253,12 +276,53 @@ class SettingsDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save
                                    | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Save).setText("保存")
+        self.save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
         buttons.accepted.connect(self._save)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def _validate_recorded_hotkey(self, action: str, value: str) -> str | None:
+        try:
+            candidate = parse_hotkey(value)
+            for other, field in self.hotkeys.items():
+                if other != action and parse_hotkey(field.text()) == candidate:
+                    return "与另一个快捷键重复，请换一个组合键。"
+        except ValueError as exc:
+            return str(exc)
+        return None
+
+    def _hotkey_validation_error(self, message: str) -> None:
+        self.hotkey_hint.setText(message)
+
+    def _hotkey_recording(self, editor: HotkeyEditor, active: bool) -> None:
+        if active:
+            # Direct signals make suspension synchronous, before key events can
+            # arrive. Switching fields cancels only the unfinished recording.
+            for other in self.hotkeys.values():
+                if other is not editor:
+                    other.cancel_capture()
+            self.hotkey_hint.setText("请按组合键，全部松开后完成。Esc 取消；原快捷键暂时不会触发。")
+        recording = any(field.is_recording for field in self.hotkeys.values())
+        self.save_button.setEnabled(not recording)
+        self.hotkey_recording_changed.emit(recording)
+
+    def _cancel_hotkey_recording(self) -> None:
+        for field in self.hotkeys.values():
+            field.cancel_capture()
+
+    def event(self, event) -> bool:
+        if event.type() == QEvent.Type.WindowDeactivate and hasattr(self, "hotkeys"):
+            self._cancel_hotkey_recording()
+        return super().event(event)
+
+    def done(self, result: int) -> None:
+        self._cancel_hotkey_recording()
+        super().done(result)
+
     def _save(self) -> None:
+        if any(field.is_recording for field in self.hotkeys.values()):
+            return
         combinations: set[tuple[int, int]] = set()
         try:
             for field in self.hotkeys.values():

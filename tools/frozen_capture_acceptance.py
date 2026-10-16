@@ -215,12 +215,14 @@ def _expected_cache_key(exe: Path, direction: str, text: str,
     from screen_translator.core.text import normalize_layout_text
     from screen_translator.core.chat_translation import (chat_source_layout,
         chat_translation_fingerprint, prepare_chat_translation)
-    from screen_translator.core.game_terms import translation_identity
+    from screen_translator.inference.translation.ctranslate2_engine import CTranslate2Engine
     from screen_translator.storage.translation_cache import make_cache_key
-    manifest = json.loads((exe.parent / "models" / "manifest.json").read_text(encoding="utf-8"))
     source = normalize_layout_text(text, chat_source_layout(text, text_layout, enabled=direction == "en-zh"))
     policy = chat_translation_fingerprint() if direction == "en-zh" else ""
-    return make_cache_key(translation_identity(manifest["translation"][direction]["id"], direction), direction,
+    # Read the same complete identity as production, without initializing any
+    # native model. Omitting the output policy causes false acceptance timeouts.
+    model_id = CTranslate2Engine(model_dir=exe.parent / "models").model_id(direction)
+    return make_cache_key(model_id, direction,
                           source, text_layout=text_layout, translation_policy=policy,
                           model_source=prepare_chat_translation(source, text_layout).cache_source if policy else None)
 

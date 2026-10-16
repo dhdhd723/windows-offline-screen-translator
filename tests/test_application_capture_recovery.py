@@ -108,7 +108,7 @@ def fake_desktop(monkeypatch):
         def __init__(self, saved):
             for name in ("selection_started", "selection_cancelled", "region_selected",
                          "toggle_requested", "clear_requested", "hide_requested",
-                         "quit_requested", "settings_changed", "settings_opening"):
+                         "quit_requested", "settings_changed", "settings_opening", "hotkey_recording_changed"):
                 setattr(self, name, Event())
             self.clears = 0
             self.opens = 0
@@ -144,6 +144,7 @@ def fake_desktop(monkeypatch):
     class Hotkeys:
         def __init__(self):
             self.action, self.error, self.binding_changed = Event(), Event(), Event()
+            self.registrations_changed = Event()
             self.effective_hotkeys = dict(settings.hotkeys)
             self.monitoring = None
             state.hotkeys = self
@@ -153,6 +154,9 @@ def fake_desktop(monkeypatch):
 
         def set_monitoring(self, value):
             self.monitoring = value
+
+        def set_recording(self, value):
+            self.recording = value
 
         def set_selecting(self, value):
             self.selecting = value
@@ -166,6 +170,8 @@ def fake_desktop(monkeypatch):
             self.generation = 0
             self.stops = 0
             self.starts = 0
+            self.clears = 0
+            self.started_regions = []
             state.pipeline = self
 
         def stop(self):
@@ -174,13 +180,14 @@ def fake_desktop(monkeypatch):
 
         def start(self, *args):
             self.starts += 1
+            self.started_regions.extend(args)
             self.is_running = True
 
         def shutdown(self, **kwargs):
             self.is_running = False
 
         def clear(self):
-            pass
+            self.clears += 1
 
     class Cache:
         def set_persistence(self, *args):
@@ -214,6 +221,24 @@ def fake_desktop(monkeypatch):
                         lambda **kwargs: object())
     monkeypatch.setattr("screen_translator.core.pipeline.Pipeline", FakePipeline)
     return state
+
+
+def test_application_clear_stops_and_toggle_resumes_saved_region(fake_desktop):
+    def scenario(tick):
+        ui, pipeline, hotkeys = fake_desktop.ui, fake_desktop.pipeline, fake_desktop.hotkeys
+        assert pipeline.is_running
+        ui.clear_requested.emit()
+        assert not pipeline.is_running and pipeline.clears == 1 and ui.clears == 1
+        assert hotkeys.monitoring is False
+        assert "Alt+T" in ui.statuses[-1][0] and "停止" in ui.statuses[-1][0]
+        # UI.select_region raises in this harness, so a passing resume also
+        # proves that clear preserved the configured valid region.
+        ui.toggle_requested.emit()
+        assert pipeline.is_running and pipeline.starts == 1 and hotkeys.monitoring is True
+        assert len(pipeline.started_regions) == 1
+        assert pipeline.started_regions[0] == Region(20, 20, 64, 32, "display-a", (0, 0, 1920, 1080))
+    fake_desktop.scenario = scenario
+    assert application.main([]) == 0
 
 
 @pytest.mark.parametrize("temporary", ["empty_snapshot", "native_api_error"])

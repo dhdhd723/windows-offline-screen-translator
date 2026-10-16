@@ -78,11 +78,14 @@ def run_self_test() -> dict:
                 translator.translate(original, direction)
                 report["tests"][-1]["translation_ms_warm"] = round((time.perf_counter() - started) * 1000, 1)
             report["translation_quality"] = evaluate_translation_quality(translator)
+            from .inference.translation.policy_diagnostics import evaluate_output_policy
+            report["output_policy"] = evaluate_output_policy(translator)
             from .core.chat_diagnostics import evaluate_chat_translation
             report["chat_translation"] = evaluate_chat_translation(ocr, translator, text_fixture)
             report["network_attempts"] = attempts.copy()
             report["passed"] = (not attempts and all(case["passed"] for case in report["tests"])
                                 and report["translation_quality"]["passed_required_scope"]
+                                and report["output_policy"]["passed"]
                                 and report["chat_translation"]["passed"])
     except Exception as exc:
         logging.exception("Offline diagnostics failed")

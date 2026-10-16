@@ -40,8 +40,8 @@ def test_direct_policy_does_not_bypass_existing_source_length_limit():
 
 
 def test_direct_glossary_has_exactly_the_existing_documented_keys():
-    assert CHAT_TRANSLATION_VERSION == 1
-    assert len(BUILTIN_CHAT_ZH) == 40
+    assert CHAT_TRANSLATION_VERSION == 3
+    assert len(BUILTIN_CHAT_ZH) == 58
     assert set(BUILTIN_CHAT_ZH) == set(BUILTIN_CHAT_SLANG)
     assert all(value.strip() and any("\u4e00" <= char <= "\u9fff" for char in value)
                for value in BUILTIN_CHAT_ZH.values())
@@ -194,7 +194,7 @@ def test_special_cache_source_is_canonical_and_covers_prefix_body_expansion_dire
     plan = prepare_chat_translation("Ty: ty\nNp: np", "continuous")
     material = json.loads(plan.cache_source)
     assert material == {
-        "version": 1, "layout": "lines", "rows": [
+        "version": 3, "layout": "lines", "rows": [
             {"prefix": "Ty: ", "body": "ty", "expanded": "thanks", "direct": "谢谢"},
             {"prefix": "Np: ", "body": "np", "expanded": "no problem", "direct": "没问题"},
         ],
@@ -218,7 +218,8 @@ def test_direct_cache_material_is_not_the_old_expanded_plain_source():
 
 def test_adapter_policy_is_versioned_and_changes_with_sanitized_custom_rules():
     default = chat_translation_fingerprint()
-    assert default == "chat-translation-v1|" + chat_slang_fingerprint(True)
+    from screen_translator.core.chinese_script import SCRIPT_POLICY_ID
+    assert default == "chat-translation-v3|" + chat_slang_fingerprint(True) + "|" + SCRIPT_POLICY_ID
     assert default != chat_slang_fingerprint(True)
     assert default == chat_translation_fingerprint({"ty": "thanks"})
     assert default != chat_translation_fingerprint({"ty": "np"})

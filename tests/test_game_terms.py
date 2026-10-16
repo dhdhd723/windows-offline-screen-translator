@@ -191,7 +191,8 @@ def test_model_identity_is_unchanged_by_lazy_initialization(tmp_path, monkeypatc
 
     engine = CTranslate2Engine(tmp_path)
     before = engine.model_id("en-zh")
-    assert before == translation_identity("fixture-en-zh", "en-zh")
+    from screen_translator.inference.translation.ctranslate2_engine import TRANSLATION_POLICY_ID
+    assert before == translation_identity("fixture-en-zh", "en-zh") + "|" + TRANSLATION_POLICY_ID
     assert before != "fixture-en-zh"
     assert engine.translate("NEW", "en-zh") == "NATIVE[NEW]"
     assert engine.model_id("en-zh") == before

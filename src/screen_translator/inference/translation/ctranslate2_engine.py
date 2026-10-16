@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any, Callable
 
 from ...core.game_terms import translate_known_game_line, translation_identity
+from ...core.chinese_script import SCRIPT_POLICY_ID, to_simplified
+from ...core.translation_structure import STRUCTURE_POLICY_ID, split_complete_sentences
+from ...core.scoped_translation_terms import (TERMS_POLICY_ID, plan_translation_fragments,
+                                             prepare_source_idioms)
 from ...paths import model_root
 from .. import (InferenceCancelled, InputLimitError, ModelFilesError,
                 checked_path, read_manifest, verify_files)
@@ -13,10 +18,21 @@ from .tokenizer import MarianSentencePieceTokenizer, split_text_for_model
 
 log = logging.getLogger(__name__)
 REQUIRED_FILES = ("config.json", "model.bin", "source.spm", "target.spm", "vocab.json", "tokenizer_config.json")
+TRANSLATION_POLICY_ID = ("quality-policy-v1|" + SCRIPT_POLICY_ID + "|"
+                         + STRUCTURE_POLICY_ID + "|" + TERMS_POLICY_ID
+                         + "|beam2-repeat1.05-ngram3-target-tag-none")
+
+
+def format_translation_output(text: str, direction: str) -> str:
+    """Normalize only translated Chinese; callers keep identity prefixes apart."""
+    return to_simplified(text) if direction == "en-zh" else text
 
 
 class CTranslate2Engine:
     """Lazy, CPU-only OPUS-MT translators, called by one inference worker."""
+
+    quality_policy_id = TRANSLATION_POLICY_ID
+    formats_simplified_output = True
 
     def __init__(self, model_dir: str | Path | None = None, cpu_threads: int = 2):
         self.root = Path(model_dir).resolve() if model_dir else model_root()
@@ -42,7 +58,8 @@ class CTranslate2Engine:
             if not entry or not isinstance(entry.get("id"), str) or not entry["id"]:
                 raise ModelFilesError(f"本地 {direction} 翻译模型缺失，请使用包含模型的完整程序包。")
             self._ids[direction] = entry["id"]
-        return translation_identity(self._ids[direction], direction)
+        identity = translation_identity(self._ids[direction], direction)
+        return identity + "|" + TRANSLATION_POLICY_ID if direction == "en-zh" else identity
 
     @staticmethod
     def _check_direction(direction: str) -> None:
@@ -116,13 +133,47 @@ class CTranslate2Engine:
             if trusted is not None:
                 translated.append(trusted)
                 continue
-            chunks = split_text_for_model(paragraph, tokenizer, max_tokens=192)
-            outputs = [self._translate_chunk(chunk, direction, cancel_check=cancel_check)
-                       for chunk in chunks]
-            joiner = " " if direction == "zh-en" else ""
-            translated.append(joiner.join(outputs))
+            if direction == "en-zh":
+                prepared = prepare_source_idioms(paragraph, context=paragraph)
+                units = split_complete_sentences(prepared)
+                outputs = [self._translate_sentence(unit, paragraph, cancel_check)
+                           for unit in units]
+                # Keep hard input/message rows only. Sentence splitting must
+                # not manufacture new chat messages or reorder the paragraph.
+                translated.append(" ".join(output for output in outputs if output))
+            else:
+                chunks = split_text_for_model(paragraph, tokenizer, max_tokens=192)
+                translated.append(" ".join(self._translate_chunk(chunk, direction,
+                    cancel_check=cancel_check) for chunk in chunks))
         self._check_cancel(cancel_check)
-        return "\n".join(translated).strip()
+        return format_translation_output("\n".join(translated).strip(), direction)
+
+    def _translate_sentence(self, sentence: str, context: str,
+                            cancel_check: Callable[[], bool] | None) -> str:
+        parts = []
+        tokenizer = self._tokenizers["en-zh"]
+        for fragment in plan_translation_fragments(sentence, context=context):
+            self._check_cancel(cancel_check)
+            if fragment.literal:
+                parts.append(fragment.text)
+                continue
+            source = fragment.text.strip()
+            if not source:
+                continue
+            # Punctuation/emoji-only gaps and already-Chinese headings are not
+            # English sentences. Preserve them rather than asking the model to
+            # invent context or translate a protected name's adjacent separator.
+            if not re.search(r"[A-Za-z]", source):
+                parts.append(source)
+                continue
+            chunks = split_text_for_model(source, tokenizer, max_tokens=192)
+            result = "".join(self._translate_chunk(chunk, "en-zh",
+                cancel_check=cancel_check) for chunk in chunks)
+            if not result.strip():
+                raise RuntimeError("本地翻译有一段未返回译文，请缩小区域后重试。")
+            parts.append(result)
+        self._check_cancel(cancel_check)
+        return "".join(parts).strip()
 
     def _translate_chunk(self, text: str, direction: str, depth: int = 0,
                          *, cancel_check: Callable[[], bool] | None = None) -> str:

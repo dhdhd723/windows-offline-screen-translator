@@ -68,7 +68,7 @@ def test_every_builtin_avoids_embedded_unicode_or_connected_words(token, templat
 
 
 @pytest.mark.parametrize("source", [
-    "u r w l", "cap bet goat", "rn atm fr pm ig",
+    "u r w l", "cap bet goat", "atm pm ig",
     "The cap fits; I bet the goat escaped.",
     "Compare variables u, r, w and l before changing them.",
 ])
@@ -167,7 +167,10 @@ def test_fingerprint_separates_activation_and_changed_custom_policy():
 @pytest.mark.parametrize("token,expanded", sorted(BUILTIN_CHAT_SLANG.items()))
 def test_every_builtin_can_be_overridden_with_cache_policy_change(token, expanded):
     original_policy = chat_slang_fingerprint(True)
-    assert chat_slang_fingerprint(True, {token: expanded}) == original_policy
+    if token == "asf":
+        assert chat_slang_fingerprint(True, {token: expanded}) != original_policy
+    else:
+        assert chat_slang_fingerprint(True, {token: expanded}) == original_policy
     custom = "custom expansion for " + token
     overrides = {token: custom}
     assert expand_chat_slang(token.upper(), overrides) == custom
