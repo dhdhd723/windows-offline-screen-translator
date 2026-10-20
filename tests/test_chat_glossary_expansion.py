@@ -50,7 +50,8 @@ REGION = Region(0, 0, 64, 32)
 
 
 def test_requested_policy_is_versioned_and_dictionaries_remain_aligned():
-    assert CHAT_SLANG_VERSION == CHAT_TRANSLATION_VERSION == 3
+    assert CHAT_SLANG_VERSION == 3
+    assert CHAT_TRANSLATION_VERSION == 4
     assert len(BUILTIN_CHAT_SLANG) == len(BUILTIN_CHAT_ZH) == 58
     assert set(BUILTIN_CHAT_SLANG) == set(BUILTIN_CHAT_ZH)
     assert sanitize_overrides(BUILTIN_CHAT_SLANG) == BUILTIN_CHAT_SLANG
@@ -260,14 +261,14 @@ def test_equal_to_builtin_asf_override_has_distinct_phrase_cache_policy():
     assert chat_translation_fingerprint() != chat_translation_fingerprint({"asf": "as fuck"})
 
 
-def test_version_three_cache_covers_direct_answer_expansion_and_user_override():
+def test_version_four_cache_covers_direct_answer_expansion_and_user_override():
     default = chat_translation_fingerprint()
-    assert default.startswith("chat-translation-v3|chat-slang-v3:")
+    assert default.startswith("chat-translation-v4|chat-slang-v3:")
     assert chat_slang_fingerprint(False) == "chat-slang-v3:disabled"
     assert default != default.replace("-v3", "-v2")
     plan = prepare_chat_translation("Player: rn")
     material = json.loads(plan.cache_source)
-    assert material["version"] == 3
+    assert material["version"] == 4
     assert material["rows"] == [{"prefix": "Player: ", "body": "rn",
                                   "expanded": "right now", "direct": "现在"}]
     overridden = prepare_chat_translation("Player: rn", overrides={"rn": "registered nurse"})

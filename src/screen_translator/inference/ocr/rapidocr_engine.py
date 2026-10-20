@@ -262,4 +262,18 @@ class RapidOCREngine:
             ordered.extend(row)
         text_rows = self._assemble_rows(rows, physical_image)
         confidence = sum(line.confidence * len(line.text) for line in ordered) / max(1, sum(len(line.text) for line in ordered))
-        return OCRResult("\n".join(text_rows), tuple(ordered), confidence)
+        visual_rows: list[TextLine] = []
+        for row, text in zip(rows, text_rows):
+            # Couple the final assembled text to its visual row without
+            # rebuilding it from raw fragments: an accepted crop reread may
+            # deliberately differ from their unmodified OCR evidence.
+            box = ()
+            if all(line.box for line in row):
+                points = tuple(point for line in row for point in line.box)
+                xs, ys = zip(*points)
+                left, top, right, bottom = min(xs), min(ys), max(xs), max(ys)
+                box = ((left, top), (right, top), (right, bottom), (left, bottom))
+            row_confidence = sum(line.confidence * len(line.text) for line in row) / max(
+                1, sum(len(line.text) for line in row))
+            visual_rows.append(TextLine(text, row_confidence, box))
+        return OCRResult("\n".join(text_rows), tuple(ordered), confidence, tuple(visual_rows))

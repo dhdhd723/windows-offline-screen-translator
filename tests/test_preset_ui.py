@@ -147,6 +147,17 @@ def test_settings_entry_does_not_change_editable_setting_delta(qapp):
         dialog.close()
 
 
+@pytest.mark.parametrize("mode", ["fast", "enhanced"])
+def test_preset_summary_does_not_advertise_an_unaccepted_model_but_keeps_compatibility(manager, mode):
+    dialog, _, _ = manager
+    dialog.store.save("聊天", Settings(chat_translation_mode=mode), False)
+    dialog.refresh()
+    assert "聊天词表：开启" in dialog.summary.text()
+    assert "聊天翻译：" not in dialog.summary.text()
+    assert "离线增强" not in dialog.summary.text()
+    assert dialog.rows[0].values["chat_translation_mode"] == mode
+
+
 def test_main_ui_opens_one_manager_and_close_releases_it(qapp,tmp_path):
     ui=MainUI(Settings())
     try:

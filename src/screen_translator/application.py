@@ -112,6 +112,8 @@ def show_startup_card(settings: object, *, background: bool = False,
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Windows offline screen translator")
     parser.add_argument("--self-test", action="store_true", help="Run synthetic offline OCR/translation diagnostics")
+    parser.add_argument("--chat-self-test", action="store_true",
+                        help="Check bundled fast chat translation with generated two-message OCR and short replies; no screen capture, tray or hotkeys")
     parser.add_argument("--smoke-test", action="store_true", help="Initialize desktop integration, then exit")
     parser.add_argument("--capture-test", action="store_true", help="Check the saved region using local capture/OCR/translation; do not save images or text")
     parser.add_argument("--startup-self-test", action="store_true",
@@ -128,12 +130,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-startup-animation", action="store_true",
                         help="Suppress startup presentation for this launch only")
     args = parser.parse_args(argv)
-    if sum((args.self_test, args.smoke_test, args.capture_test, args.startup_self_test)) > 1:
+    if sum((args.self_test, args.chat_self_test, args.smoke_test, args.capture_test, args.startup_self_test)) > 1:
         parser.error("Choose only one diagnostic mode")
     if args.capture_test and (not args.report or not 1 <= args.capture_samples <= 5
                              or not 0 <= args.capture_delay <= 10):
         parser.error("--capture-test requires --report, 1-5 samples and a 0-10 second delay")
-    if args.accept_runtime_terms and not (args.self_test or args.smoke_test or args.capture_test or args.startup_self_test):
+    if args.accept_runtime_terms and not (args.self_test or args.chat_self_test or args.smoke_test or args.capture_test or args.startup_self_test):
         parser.error("--accept-runtime-terms requires a diagnostic mode; normal first use requires the consent dialog")
     if args.data_dir:
         os.environ["SCREEN_TRANSLATOR_DATA"] = str(args.data_dir.resolve())
@@ -151,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
     from .runtime_terms import authorize_runtime_terms
     store = SettingsStore()
     settings = store.load()
-    diagnostic = args.self_test or args.smoke_test or args.capture_test or args.startup_self_test
+    diagnostic = args.self_test or args.chat_self_test or args.smoke_test or args.capture_test or args.startup_self_test
     consent = None
     if diagnostic:
         # Automated tests do not implicitly accept legal terms and do not open a
@@ -166,6 +168,18 @@ def main(argv: list[str] | None = None) -> int:
                 args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 3
+    if args.chat_self_test:
+        # This separate runtime probe needs PIL-rendered pixels, not a Qt
+        # application, Windows tray, desktop capture provider or global input.
+        from .chat_diagnostics import run_chat_self_test
+        report = run_chat_self_test()
+        report.update(runtime_terms_version=consent.version,
+                      runtime_terms_acceptance=consent.acceptance)
+        if args.report:
+            args.report.parent.mkdir(parents=True, exist_ok=True)
+            args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report["passed"] else 1
     from .platform.windows.dpi import enable_dpi_awareness
     enable_dpi_awareness()
     from PySide6.QtWidgets import QApplication, QMessageBox

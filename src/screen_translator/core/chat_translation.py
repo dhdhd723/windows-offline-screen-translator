@@ -14,12 +14,16 @@ from dataclasses import dataclass
 from screen_translator.core.chat_slang import (
     chat_slang_fingerprint, expand_chat_slang, sanitize_overrides,
 )
+from screen_translator.core.chat_normalization import (
+    CHAT_CANDIDATES_VERSION, ChatHint, conservative_chat_candidates,
+)
+from screen_translator.core.chat_messages import CHAT_MESSAGE_POLICY_ID
 from screen_translator.core.text import normalize_layout_text
 from screen_translator.core.chinese_script import SCRIPT_POLICY_ID, to_simplified
 from screen_translator.inference import InferenceCancelled, InputLimitError
 
 
-CHAT_TRANSLATION_VERSION = 3
+CHAT_TRANSLATION_VERSION = 4
 # Selected meanings match the existing, explicitly documented English glossary.
 # These are reliable standalone-message answers, not replacements in sentences.
 BUILTIN_CHAT_ZH = {
@@ -44,12 +48,32 @@ BUILTIN_CHAT_ZH = {
     "yk": "你知道的", "def": "肯定", "istg": "我发誓",
     "tytl": "回头聊", "mdfk": "混蛋（粗口）", "asf": "……得要命（粗俗强调）",
 }
+# Independent acknowledgements/reactions may be adjacent in one message. Do
+# not compose conjunctions, adverbs or ambiguous terms into invented sentences.
+_COMPOSABLE_REPLIES = frozenset({
+    "ty", "tys", "tysm", "thx", "yw", "np", "brb", "afk", "idk", "nvm",
+    "gtg", "ttyl", "tytl", "cya", "cyaa", "lol", "lmao", "rofl", "gg",
+    "ggwp", "glhf", "omg", "ikr",
+})
+_COMPOSED_TOKEN = re.compile(r"(?P<token>[A-Za-z][A-Za-z0-9]*)(?P<end>[.!?…。！？]*)\Z")
 
 
-def chat_translation_fingerprint(overrides: object = None) -> str:
+def _validate_mode(mode: str) -> None:
+    if mode not in ("fast", "enhanced"):
+        raise ValueError("聊天翻译模式必须为 fast 或 enhanced")
+
+
+def chat_translation_fingerprint(overrides: object = None, *, mode: str = "fast",
+                                 slang_enabled: bool = True) -> str:
     """Do not reuse pre-adapter expansions that translated names or echoed ty."""
+    _validate_mode(mode)
+    if type(slang_enabled) is not bool:
+        raise ValueError("聊天词表开关必须为布尔值")
     return (f"chat-translation-v{CHAT_TRANSLATION_VERSION}|"
-            + chat_slang_fingerprint(True, overrides) + "|" + SCRIPT_POLICY_ID)
+            + chat_slang_fingerprint(slang_enabled, overrides) + "|" + SCRIPT_POLICY_ID
+            + ("|slang=enabled" if slang_enabled else "|slang=disabled")
+            + f"|mode={mode}|chat-candidates-v{CHAT_CANDIDATES_VERSION}|"
+            + CHAT_MESSAGE_POLICY_ID)
 
 # Only a single short identity, optionally bracketed or with one channel tag.
 # Arbitrary phrases before a colon are not accepted as usernames.
@@ -61,6 +85,17 @@ _NAME_ROW = re.compile(
     rf"(?P<prefix>(?:(?P<name>{_IDENTIFIER})"
     rf"|\[(?P<bracket_name>{_IDENTIFIER})\]"
     rf"|\[(?P<channel>{_IDENTIFIER})\] (?P<channel_name>{_IDENTIFIER})):[ \t]*)"
+    r"(?P<body>.+)\Z"
+)
+# Opt-in display names for an explicitly selected line-by-line chat layout only.
+# Title Case, two/three words and a total 32-character limit avoid treating any
+# arbitrary phrase before a colon as a nickname. Text alone still cannot prove
+# that a title such as "Game Over" is a name; do not use this for auto-layout.
+_DISPLAY_NAME = r"[A-Z][A-Za-z0-9_.-]*(?:[ \t]+[A-Z][A-Za-z0-9_.-]*){1,2}"
+_DISPLAY_NAME_ROW = re.compile(
+    rf"(?P<prefix>(?:(?P<name>{_DISPLAY_NAME})"
+    rf"|\[(?P<bracket_name>{_DISPLAY_NAME})\]"
+    rf"|\[(?P<channel>{_IDENTIFIER})\] (?P<channel_name>{_DISPLAY_NAME})):[ \t]*)"
     r"(?P<body>.+)\Z"
 )
 # No backticks, slashes, hyphens, underscores or colon: code/paths/identity
@@ -77,11 +112,17 @@ _TAKE_LEAD = re.compile(
 )
 
 
-def _named_row(row: str) -> tuple[str, str] | None:
+def _named_row(row: str, *, allow_display_name: bool = False) -> tuple[str, str] | None:
     match = _NAME_ROW.fullmatch(row)
+    display_name = False
+    if match is None and allow_display_name:
+        match = _DISPLAY_NAME_ROW.fullmatch(row)
+        display_name = match is not None
     if match is None:
         return None
     name = match.group("name") or match.group("bracket_name") or match.group("channel_name")
+    if display_name and len(name) > 32:
+        return None
     if not any(character.isalpha() for character in name):
         # E.g. 12:30 and 123: 45 are not chat identities.
         return None
@@ -110,7 +151,8 @@ def chat_source_layout(text: str, text_layout: str = "continuous", enabled: bool
 def chat_direction_source(text: str, text_layout: str = "continuous") -> str:
     """An explicit nickname must not decide the language of its message body."""
     source = normalize_layout_text(text, chat_source_layout(text, text_layout))
-    return "\n".join((named[1] if (named := _named_row(row)) else row)
+    return "\n".join((named[1] if (named := _named_row(
+        row, allow_display_name=text_layout == "lines")) else row)
                      for row in source.splitlines())
 
 
@@ -120,14 +162,25 @@ class _ChatRow:
     body: str
     expanded: str
     direct: str | None
+    hints: tuple[ChatHint, ...] = ()
 
 
-def _direct_answer(body: str, overrides: dict[str, str], *, named: bool) -> str | None:
+def _direct_answer(body: str, overrides: dict[str, str], *, named: bool,
+                   mode: str = "fast") -> str | None:
     match = _STANDALONE.fullmatch(body)
     if match is not None:
         token = match.group("token").lower()
         if token not in overrides and token in BUILTIN_CHAT_ZH:
-            return match.group("before") + BUILTIN_CHAT_ZH[token] + match.group("after")
+            hints = conservative_chat_candidates(token).hints if mode == "enhanced" else ()
+            if not any(hint.ambiguous for hint in hints):
+                return match.group("before") + BUILTIN_CHAT_ZH[token] + match.group("after")
+    pieces = re.split(r"[ \t,;，；]+", body)
+    if 2 <= len(pieces) <= 5:
+        matches = [_COMPOSED_TOKEN.fullmatch(piece) for piece in pieces]
+        if all(match is not None and match.group("token").lower() in _COMPOSABLE_REPLIES
+               and match.group("token").lower() not in overrides for match in matches):
+            return "，".join(BUILTIN_CHAT_ZH[match.group("token").lower()]
+                            + match.group("end") for match in matches)
     # This phrase has a non-metal sense in a named chat command only. Do not
     # perform a broad 'lead' rewrite or alter lead poisoning / lead bullets.
     if named and not any(token in overrides for token in ("take", "lead")):
@@ -151,6 +204,21 @@ def _model_translate(translator, text: str, direction: str,
     else:
         result = translator.translate(text, direction)
     _check_cancel(cancel_check)
+    return _finish_model_result(translator, result, direction)
+
+
+def _enhanced_translate(translator, text: str, direction: str, hints: tuple[ChatHint, ...],
+                        cancel_check: Callable[[], bool] | None) -> str:
+    _check_cancel(cancel_check)
+    chat_translate = getattr(translator, "translate_chat", None)
+    if not callable(chat_translate):
+        raise RuntimeError("已选择增强聊天模式，但当前翻译器不支持增强聊天接口；未回退到轻量模式。")
+    result = chat_translate(text, direction, hints=hints, cancel_check=cancel_check)
+    _check_cancel(cancel_check)
+    return _finish_model_result(translator, result, direction)
+
+
+def _finish_model_result(translator, result: object, direction: str) -> str:
     if not isinstance(result, str) or not result.strip():
         raise RuntimeError("本地模型返回空译文")
     result = result.strip()
@@ -167,6 +235,12 @@ class ChatTranslationPlan:
     cache_source: str
     _rows: tuple[_ChatRow, ...]
     _plain_model_text: str | None
+    mode: str = "fast"
+
+    @property
+    def uses_row_adapter(self) -> bool:
+        """Whether identity/direct-row handling changes the model call shape."""
+        return self._plain_model_text is None
 
     def translate(self, translator, direction: str,
                   cancel_check: Callable[[], bool] | None = None) -> str:
@@ -186,7 +260,11 @@ class ChatTranslationPlan:
             _check_cancel(cancel_check)
             answer = row.direct
             if answer is None:
-                answer = _model_translate(translator, row.expanded, direction, cancel_check)
+                if self.mode == "enhanced":
+                    answer = _enhanced_translate(translator, row.body, direction,
+                                                 row.hints, cancel_check)
+                else:
+                    answer = _model_translate(translator, row.expanded, direction, cancel_check)
             elif direction == "en-zh":
                 answer = to_simplified(answer)
             _check_cancel(cancel_check)
@@ -198,35 +276,49 @@ class ChatTranslationPlan:
 
 
 def prepare_chat_translation(text: str, text_layout: str = "continuous",
-                             overrides: object = None) -> ChatTranslationPlan:
+                             overrides: object = None, *, mode: str = "fast",
+                             slang_enabled: bool = True) -> ChatTranslationPlan:
     """Prepare once; custom English overrides always outrank direct answers.
 
     Longer ordinary text retains the existing one-pass expansion and single
     model invocation. Only recognized identities / direct rows become a small
     canonical structured cache source, keeping their boundaries and policy.
     """
-    custom = sanitize_overrides(overrides)
+    _validate_mode(mode)
+    if type(slang_enabled) is not bool:
+        raise ValueError("聊天词表开关必须为布尔值")
+    custom = sanitize_overrides(overrides) if slang_enabled else {}
     layout = chat_source_layout(text, text_layout)
     source = normalize_layout_text(text, layout)
     rows: list[_ChatRow] = []
     special = False
     for row in source.splitlines():
-        named = _named_row(row)
+        named = _named_row(row, allow_display_name=text_layout == "lines")
         prefix, body = named if named is not None else ("", row)
-        expanded = expand_chat_slang(body, custom)
-        direct = _direct_answer(body, custom, named=bool(prefix))
+        expanded = expand_chat_slang(body, custom) if mode == "fast" and slang_enabled else body
+        hints = (conservative_chat_candidates(body, custom).hints
+                 if mode == "enhanced" and slang_enabled else ())
+        direct = (_direct_answer(body, custom, named=bool(prefix), mode=mode)
+                  if slang_enabled else None)
         special = special or bool(prefix) or direct is not None
-        rows.append(_ChatRow(prefix, body, expanded, direct))
-    if special and len(source) > 16000:
+        rows.append(_ChatRow(prefix, body, expanded, direct, hints))
+    if (special or mode == "enhanced") and len(source) > 16000:
         raise InputLimitError("框选文字过多，请缩小翻译区域；原文没有被截断。")
-    if not special:
-        model_text = expand_chat_slang(source, custom)
+    if not special and mode == "fast":
+        model_text = expand_chat_slang(source, custom) if slang_enabled else source
         return ChatTranslationPlan(model_text, tuple(rows), model_text)
     material = {
         "version": CHAT_TRANSLATION_VERSION,
+        "mode": mode,
+        "slang_enabled": slang_enabled,
+        "candidate_version": CHAT_CANDIDATES_VERSION,
+        "message_policy": CHAT_MESSAGE_POLICY_ID,
         "layout": layout,
         "rows": [{"prefix": row.prefix, "body": row.body,
-                  "expanded": row.expanded, "direct": row.direct} for row in rows],
+                  "expanded": row.expanded, "direct": row.direct,
+                  **({"hints": [{"token": hint.token, "start": hint.start, "end": hint.end,
+                                  "candidates": list(hint.candidates)} for hint in row.hints]}
+                     if mode == "enhanced" else {})} for row in rows],
     }
     cache_source = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return ChatTranslationPlan(cache_source, tuple(rows), None)
+    return ChatTranslationPlan(cache_source, tuple(rows), None, mode)

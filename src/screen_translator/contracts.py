@@ -53,6 +53,7 @@ class Settings:
     auto_start: bool = False
     startup_animation: bool = True
     runtime_terms_version: str = ""
+    chat_translation_mode: str = "fast"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -72,6 +73,9 @@ class Settings:
             obj.text_layout = "continuous"
         if not isinstance(obj.chat_slang_enabled, bool):
             obj.chat_slang_enabled = True
+        if (not isinstance(obj.chat_translation_mode, str)
+                or obj.chat_translation_mode not in {"fast", "enhanced"}):
+            obj.chat_translation_mode = "fast"
         if not isinstance(obj.startup_animation, bool):
             obj.startup_animation = True
         from screen_translator.core.chat_slang import sanitize_overrides
@@ -99,6 +103,9 @@ class OCRResult:
     text: str
     lines: tuple[TextLine, ...] = ()
     confidence: float = 0.0
+    # Assembled, possibly crop-reread-corrected visual rows. ``lines`` above
+    # remains the original detector/recognizer evidence, not message groups.
+    visual_rows: tuple[TextLine, ...] = ()
 
 
 @dataclass(frozen=True)

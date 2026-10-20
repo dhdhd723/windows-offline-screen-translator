@@ -48,6 +48,21 @@ class CTranslate2Engine:
         self._ids: dict[str, str] = {}
         self._preferred_direction = "en-zh"
 
+    def configure_chat_mode(self, mode: str) -> None:
+        """The candidate intentionally supports only the accepted CT2 backend.
+
+        Research model trials were not a quality improvement. Their runtime is
+        not part of this package; an explicit unsupported backend must fail,
+        not download files or silently fall back after allocating another model.
+        """
+        if mode != "fast":
+            raise ValueError("当前候选仅提供轻量聊天翻译；增强模型尚未通过质量测试。")
+
+    def close(self) -> None:
+        """Release loaded weights on their owning inference worker."""
+        self._translators.clear()
+        self._tokenizers.clear()
+
     def configure_direction(self, direction: str) -> None:
         """Called between jobs; keep Japanese and legacy weights mutually exclusive."""
         self._preferred_direction = "en-zh" if direction == "auto" else direction

@@ -1,6 +1,8 @@
 # 本地屏幕翻译器
 
-[![日语增强预发布](https://img.shields.io/badge/release-0.1.1%20Japanese-orange?style=flat-square)](https://github.com/dhdhd723/windows-offline-screen-translator/releases/tag/v0.1.1-japanese-20261016)
+> 新增 [2026-10-20 聊天修补测试预发布](https://github.com/dhdhd723/windows-offline-screen-translator/releases/tag/v0.1.1-chat-core-20261020)：改进消息分行、部分多词昵称保护和短回复组合。复杂游戏口语仍可能错译，尚未完成 Roblox 实机验收，详见[候选说明](docs/聊天候选说明.md)。
+
+[![聊天修补测试版](https://img.shields.io/badge/release-0.1.1%20Chat%20Core-orange?style=flat-square)](https://github.com/dhdhd723/windows-offline-screen-translator/releases/tag/v0.1.1-chat-core-20261020)
 [![Windows](https://img.shields.io/badge/platform-Windows%20x64-0078D4?style=flat-square)](#兼容与限制)
 [![Downloads](https://img.shields.io/github/downloads/dhdhd723/windows-offline-screen-translator/total?style=flat-square&label=Downloads)](https://github.com/dhdhd723/windows-offline-screen-translator/releases)
 [![Stars](https://img.shields.io/github/stars/dhdhd723/windows-offline-screen-translator?style=flat-square&label=Stars)](https://github.com/dhdhd723/windows-offline-screen-translator/stargazers)
@@ -10,7 +12,7 @@
 *Offline screen translator for Windows: Chinese ↔ English, Japanese → Simplified Chinese.*
 
 完整运行包自带模型和运行依赖，无需安装 Python、配置显卡或使用付费 API。项目署名 **dhdhd723**。
-当前提供 **0.1.1 日语增强预发布版**，完整包约 791 MB。已有离线自检结果，但不保证所有游戏、全屏模式或文字都能正确识别和翻译，详见[兼容与限制](#兼容与限制)。
+当前提供 **2026-10-20 聊天修补测试预发布版**，完整包约 792.9 MB，保留中英和日语模型，没有加入试验性大模型。已完成本机离线自检，但不保证所有游戏、全屏模式或文字都能正确识别和翻译，详见[兼容与限制](#兼容与限制)。
 
 - 框选固定区域，持续监控文字变化，结合相似度与缓存减少重复处理。
 - 中英双向翻译，另可选择“日语 → 简体中文”；不依赖在线翻译服务。
@@ -23,8 +25,9 @@
 
 | 下载 | 内容 |
 | --- | --- |
-| [完整 Windows 运行包（7z，约 791 MB）](https://github.com/dhdhd723/windows-offline-screen-translator/releases/download/v0.1.1-japanese-20261016/ScreenTranslator-0.1.1-Japanese-Windows-x64-lossless.7z) | 含 exe、中英和日语模型、运行依赖及许可文件，普通用户下载这一项 |
-| [发布页与文件校验](https://github.com/dhdhd723/windows-offline-screen-translator/releases/tag/v0.1.1-japanese-20261016) | 更新说明、测试报告、对应源码与 SHA256SUMS.txt |
+| [完整 Windows 测试运行包（7z，约 792.9 MB）](https://github.com/dhdhd723/windows-offline-screen-translator/releases/download/v0.1.1-chat-core-20261020/ScreenTranslator-0.1.1-Chat-Core-Candidate-20261020-Windows-x64.7z) | **含 EXE**、中英和日语模型、运行依赖、许可及对应源码，普通用户下载这一项 |
+| [本次发布页与文件校验](https://github.com/dhdhd723/windows-offline-screen-translator/releases/tag/v0.1.1-chat-core-20261020) | 更新说明、验收报告、对应源码 ZIP 与 SHA256SUMS.txt |
+| [上一版日语增强完整包](https://github.com/dhdhd723/windows-offline-screen-translator/releases/tag/v0.1.1-japanese-20261016) | 2026-10-16 版本，7z 约 791 MB，保留供回退 |
 | [只需中英的旧场景预设版](https://github.com/dhdhd723/windows-offline-screen-translator/releases/tag/v0.1.1-scene-presets-20261016) | 不含日语模型，ZIP 约 379 MB；属于之前的预发布版 |
 | [全部历史版本](https://github.com/dhdhd723/windows-offline-screen-translator/releases) | 保留旧预发布与正式 v0.1.0，不覆盖原附件 |
 
@@ -35,7 +38,7 @@
 
 请保留 exe 同目录的 `_internal`、`models` 和 `LICENSES` 文件夹，不要只复制 exe。
 GitHub 自动生成的 **Source code ZIP 不是运行包**；仓库源码不含 exe 和模型权重。“无需 Python”只适用于完整运行包。
-本次仅用无损压缩将日语完整包从 840.3 MB 降到 791.1 MB，减少约 49.2 MB（5.86%）。全部 695 个文件与原 ZIP 内容一致，不改模型精度；解压后约 1.095 GB，运行内存不会因压缩而下降。
+本次运行包为 792,893,185 字节，使用无损压缩；711 个文件重新解压后逐项校验一致。保留原有模型、运行依赖和许可文件，不通过删减运行组件或降低模型精度压缩体积；解压后约 1.095 GB，运行内存不会因压缩而下降。之前日语版的 695 文件、791.1 MB 数据只适用于历史包。
 
 ## 使用
 
@@ -79,25 +82,27 @@ Esc 会继续传给当前应用；框选层和设置窗口需要正常接受输�
 ### 聊天与段落
 
 两条独立消息选择“逐行对话（聊天／Roblox）”，一句话自动换行则使用“连续文本（段落／长句）”。
-明确的 `昵称: 正文` 会保留昵称；连续模式遇到两条明确带昵称的消息也会保留独立行。
+明确的 `昵称: 正文` 会保留昵称；逐行模式还可保护部分两到三个首字母大写的英文显示名。连续模式遇到两条明确带单词昵称的消息也会保留独立行。只有 OCR 位置明确支持的缩进续行才合并，不猜测左对齐或位置不明的换行。
 
 内置词表默认启用，无需逐条添加：独立的 `ty` / `tys` → `谢谢`、`np` → `没问题`；长句中的缩写先展开为英文，再交给模型。
 数字 `2` 只在 `want 2 play` 等明确短语中按 `to` 处理。TYTL 是用户确认的“回头聊”兼容写法；MDFK、ASF 含粗俗语气。
-多义缩写按聊天选义，未知缩写不猜释义。设置 →“聊天词表”可查看、关闭或覆盖规则，详见[58 项内置词表与来源](docs/聊天内置词表.md)。
+本轮支持短回复组合，例如 `ty np lol` → `谢谢，没问题，哈哈`。关闭词表时，逐行昵称保护仍可生效，但不展开缩写。
+多义缩写仍有风险；词表不为未知缩写编造释义，但后续模型仍可能自行猜错。设置 →“聊天词表”可查看、关闭或覆盖规则，详见[58 项内置词表与来源](docs/聊天内置词表.md)。
 
 ## 兼容与限制
 
 - 目标系统为 Windows 10 2004 及以上 / Windows 11，64 位。仅支持单个固定区域，可在任一显示器内框选，不支持跨屏选区。
 - 普通窗口或无边框窗口优先。真独占全屏、受保护内容和安全桌面可能无法捕获，或无法叠加普通悬浮字幕；当前没有全屏覆盖保证。
 - “录屏兼容”默认开启，允许其他录屏或共享软件记录字幕；关闭时才尝试排除本应用字幕。它不修改 NVIDIA 或游戏，也不是绕过内容保护。
-- 日语新增 31 项测试通过，最终冻结源码回归 3,607 项通过、4 项跳过、6 项排除；跳过和排除不计为通过。新 exe 日语固定文本 17 项和合成 OCR 图像 6 项功能检查通过，关键词 17/17、OCR 去空格逐字检查 6/6；关键词检查不能证明完整语义正确。
-- 原有中英、7 项预设、116 项词表短回复和 42 项固定图像 OCR 管线自检通过。7z 解压后全部 695 个文件与原 ZIP 的 SHA-256 一致，解压后的 exe 启动与翻译自检再次通过；这些不是实时游戏验收。
+- 本次完整源码回归为 4,247 项通过、10 项跳过；跳过不计为通过。实际 OCR 使用生成图片，另有 52 条构造文本的真实轻量模型对照，不是代表性准确率测试。
+- 新 EXE 通过本机隔离启动、中英与日语离线翻译、聊天处理自检；711 个文件重新解压并逐项核对一致，解压后的 EXE 再次通过聊天自检。这些不是实时游戏验收。
 - **本轮尚未完成 Roblox 实时聊天、NVIDIA 录制、真独占全屏、物理多屏混合 DPI 和干净 Windows 系统的实机验收。** 离屏 Qt 控件、临时数据和合成图像测试不能替代这些检查。
 - 普通长句仍可能重复、漏译或错译，扩展语义关键词检查仍为 4/8；`l8r` 可能被 OCR 误识别。简体字形转换不等于语义润色，已知专名规则也不覆盖未知名称。
 - 日语仍有已记录错译，例如“ここで待ってください。”得到“请等到这里。”，不能把“返回中文”当作“意思正确”。本轮也没有完成真实日文游戏验收。
 - 程序未数字签名，Windows 可能提示未识别发布者。可用发行页的 `SHA256SUMS.txt` 核对文件，不需要关闭安全软件。
 
-本轮完整验证、哈希和测试边界见[日语测试报告](docs/releases/JAPANESE_TEST_REPORT_20261016.md)与[无损精简说明](docs/releases/LOSSLESS_PACKAGE_REPORT_20261016.md)。
+本轮完整验证、哈希和测试边界见[聊天修补验收报告](docs/releases/CHAT_CORE_ACCEPTANCE_20261020.md)与[完整包交付验证](docs/releases/CHAT_CORE_DELIVERY_20261020.md)。报告及包内说明记录的是发布前验收状态；其中“尚未发布”不表示当前发布页没有附件。运行包保持验收时的原始字节，不为更新这句话重新打包。
+旧版日语数据见[2026-10-16 日语测试报告](docs/releases/JAPANESE_TEST_REPORT_20261016.md)与[无损精简说明](docs/releases/LOSSLESS_PACKAGE_REPORT_20261016.md)，不能当成本轮新增测试。
 历史实机片段只说明当时的菜单或窗口，不自动作为本版通过证据。
 
 ## 本地数据与隐私
@@ -137,8 +142,10 @@ OCR 使用 RapidAI 转换的 PP-OCRv5 mobile ONNX 模型及匹配字库，复用
 
 | 文档 | 内容 |
 | --- | --- |
-| [本次发布说明](docs/releases/v0.1.1-japanese-20261016.md) | 日语增强更新、附件与下载说明 |
-| [日语测试报告](docs/releases/JAPANESE_TEST_REPORT_20261016.md) | 本轮源码、exe、模型验证、已知错译及未测范围 |
+| [本次发布说明](docs/releases/v0.1.1-chat-core-20261020.md) | 聊天结构与短回复修补、附件与下载说明 |
+| [聊天验收报告](docs/releases/CHAT_CORE_ACCEPTANCE_20261020.md) | 本轮源码、EXE、模型检查与未解决问题 |
+| [完整包交付验证](docs/releases/CHAT_CORE_DELIVERY_20261020.md) | 711 文件校验及解压后 EXE 自检 |
+| [旧版日语测试报告](docs/releases/JAPANESE_TEST_REPORT_20261016.md) | 2026-10-16 日语模型验证、已知错译及未测范围 |
 | [无损精简说明](docs/releases/LOSSLESS_PACKAGE_REPORT_20261016.md) | 体积对比、逐文件哈希与解压后 exe 自检 |
 | [日语支持](docs/日语支持说明.md) | 方向选择、识别范围与模型构建 |
 | [使用说明](docs/使用说明.md) | 操作、排版与常见问题 |

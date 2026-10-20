@@ -219,8 +219,9 @@ def test_serialized_presets_have_no_legal_or_runtime_content(tmp_path):
     store.save("聊天",configured())
     raw=store.path.read_text(encoding="utf-8")
     assert "current-consent" not in raw
-    assert all(word not in raw for word in ("runtime_terms_version","auto_start","startup_animation","translation"))
     record=json.loads(raw)
+    assert all(key not in record["presets"][0]["values"] for key in (
+        "runtime_terms_version", "auto_start", "startup_animation", "translation"))
     assert len(record["presets"])==1 and record["schema_version"]==1
 
 

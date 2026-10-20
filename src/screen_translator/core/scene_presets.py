@@ -13,6 +13,7 @@ MAX_PRESETS = 20
 MAX_NAME_LENGTH = 40
 PRESET_FIELDS = frozenset({
     "direction", "text_layout", "chat_slang_enabled", "chat_slang_overrides",
+    "chat_translation_mode",
     "capture_fps", "idle_fps", "debounce_ms", "min_ocr_interval_ms", "cpu_threads",
     "font_size", "opacity", "show_source", "esc_enabled", "recording_compatibility",
     "hotkeys", "cache_enabled",
@@ -36,9 +37,17 @@ def clean_preset_name(value: object) -> str:
 
 def checked_values(values: object, include_region: bool) -> dict:
     fields = PRESET_FIELDS | SPATIAL_FIELDS if include_region else PRESET_FIELDS
-    if not isinstance(values, dict) or set(values) != fields:
+    # The sole accepted legacy shape is the previous complete allowlist.
+    # Never turn this into a general fill-missing-fields migration: a damaged
+    # preset or an injected unknown field must still be rejected unchanged.
+    legacy_fields = fields - {"chat_translation_mode"}
+    if not isinstance(values, dict) or set(values) not in (fields, legacy_fields):
         raise PresetError("预设字段缺失或包含不允许恢复的内容")
     data = copy.deepcopy(values)
+    data.setdefault("chat_translation_mode", "fast")
+    if (not isinstance(data["chat_translation_mode"], str)
+            or data["chat_translation_mode"] not in {"fast", "enhanced"}):
+        raise PresetError("预设聊天翻译模式无效")
     for key in ("chat_slang_enabled", "show_source", "esc_enabled",
                 "recording_compatibility", "cache_enabled"):
         if not isinstance(data[key], bool):

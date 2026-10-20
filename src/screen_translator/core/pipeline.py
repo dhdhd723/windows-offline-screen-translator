@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
+from functools import partial
 from typing import Callable
 
 import numpy as np
@@ -14,7 +15,8 @@ from screen_translator.capture.mss_backend import (InvalidCaptureRegionError,
                                                   is_transient_capture_error)
 from screen_translator.contracts import OCRResult, Region, Settings, TranslationResult
 from screen_translator.core.chat_translation import (chat_direction_source, chat_source_layout,
-    chat_translation_fingerprint, prepare_chat_translation)
+    chat_translation_fingerprint, prepare_chat_translation, _named_row)
+from screen_translator.core.chat_messages import assemble_chat_messages
 from screen_translator.core.text import (choose_direction, is_meaningful_layout_change,
                                         layout_semantic_signature, normalize_layout_text)
 from screen_translator.inference import InferenceCancelled, PermanentInferenceError
@@ -196,6 +198,7 @@ class Pipeline:
             restart = self._running and (old_settings.direction != new_settings.direction
                                          or old_settings.text_layout != new_settings.text_layout
                                          or old_settings.chat_slang_enabled != new_settings.chat_slang_enabled
+                                         or old_settings.chat_translation_mode != new_settings.chat_translation_mode
                                          or old_settings.chat_slang_overrides != new_settings.chat_slang_overrides)
             region = self._region
             if restart:
@@ -211,6 +214,7 @@ class Pipeline:
                 self._retry_not_before = 0.0
                 self._force_epoch += 1
             if (old_settings.cpu_threads != new_settings.cpu_threads
+                    or old_settings.chat_translation_mode != new_settings.chat_translation_mode
                     or old_settings.direction != new_settings.direction):
                 self._configuration_requested = True
                 self._condition.notify()
@@ -466,6 +470,17 @@ class Pipeline:
                 self._capture_threads.discard(threading.current_thread())
 
     def _inference_loop(self) -> None:
+        try:
+            self._run_inference_loop()
+        finally:
+            close = getattr(self._translator, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    _LOG.exception("Local translation runtime cleanup failed")
+
+    def _run_inference_loop(self) -> None:
         while True:
             with self._condition:
                 self._condition.wait_for(lambda: self._closed or self._pending is not None
@@ -548,6 +563,11 @@ class Pipeline:
             select = getattr(self._translator, "configure_direction", None)
             if callable(select):
                 select(direction)
+            select_chat = getattr(self._translator, "configure_chat_mode", None)
+            if callable(select_chat):
+                # Preserve unpublished research values in settings/presets,
+                # but never activate a model that failed quality acceptance.
+                select_chat("fast")
             if self._configured_threads == threads:
                 return
             for engine in (self._ocr, self._translator):
@@ -601,8 +621,21 @@ class Pipeline:
     def _normalize_observation(self, text: str) -> str:
         return normalize_layout_text(text, self._observation_layout(text))
 
+    def _normalize_recognition(self, result: OCRResult) -> str:
+        """One canonical message policy for dedup, cancellation and display."""
+        enabled = ((self._settings.chat_slang_enabled
+                    or self._settings.text_layout == "lines")
+                   and choose_direction(chat_direction_source(result.text, self._settings.text_layout),
+                                        self._settings.direction) == "en-zh")
+        parser = partial(_named_row, allow_display_name=True) if (
+            self._settings.text_layout == "lines") else _named_row
+        text = assemble_chat_messages(result, text_layout=self._settings.text_layout,
+                                      enabled=enabled, prefix_parser=parser)
+        return self._normalize_observation(text)
+
     def _observation_layout(self, text: str) -> str:
-        active = (self._settings.chat_slang_enabled
+        active = ((self._settings.chat_slang_enabled
+                   or self._settings.text_layout == "lines")
                   and choose_direction(chat_direction_source(text, self._settings.text_layout),
                                        self._settings.direction) == "en-zh")
         return chat_source_layout(text, self._settings.text_layout, enabled=active)
@@ -624,14 +657,14 @@ class Pipeline:
         path. An in-flight frame's recognized text may provide provisional
         evidence before its observation has been committed to the baseline.
         """
-        candidate = self._normalize_observation(result.text)
+        candidate = self._normalize_recognition(result)
         if (not reference or candidate == reference
                 or (candidate and self._is_meaningful_change(reference, candidate))):
             return False
         if self._trusted_text == reference and self._trusted_boxes and self._trusted_pixels is not None:
             boxes, pixels, shape = self._trusted_boxes, self._trusted_pixels, self._trusted_shape
         elif (baseline is not None and baseline.recognized is not None
-              and self._normalize_observation(baseline.recognized.text) == reference):
+              and self._normalize_recognition(baseline.recognized) == reference):
             boxes = self._ocr_boxes(baseline.recognized, baseline.image)
             if not boxes:
                 return False
@@ -676,7 +709,7 @@ class Pipeline:
             preceding_stage = self._inflight_stage
             self._inflight_stage = "ocr"
         result = pending.recognized or self._ocr.recognize(pending.image)
-        latest = self._normalize_observation(result.text)
+        latest = self._normalize_recognition(result)
         with self._condition:
             if not self._current_locked(frame.generation):
                 return True
@@ -691,9 +724,9 @@ class Pipeline:
             # A single near-match or blank OCR can be noise. This candidate
             # has already passed capture debounce; confirm its text once more.
             confirmation = self._ocr.recognize(pending.image)
-            confirmed = self._normalize_observation(confirmation.text) == latest
+            confirmed = self._normalize_recognition(confirmation) == latest
             result = confirmation
-            latest = self._normalize_observation(confirmation.text)
+            latest = self._normalize_recognition(confirmation)
             meaningful = confirmed
             different = self._semantic_signature(text) != self._semantic_signature(latest)
         with self._condition:
@@ -720,7 +753,7 @@ class Pipeline:
                 return
             self._inflight_stage = "ocr"
         result: OCRResult = frame.recognized or self._ocr.recognize(frame.image)
-        text = self._normalize_observation(result.text)
+        text = self._normalize_recognition(result)
         frame = _Frame(frame.image, frame.generation, frame.captured_at, result)
         with self._lock:
             if not self._current_locked(frame.generation):
@@ -784,8 +817,10 @@ class Pipeline:
             self._suppressed_text = None
             self._last_observed = text
             self._accept_observation_locked(text, result, frame.image)
+            chat_active = (self._settings.chat_slang_enabled
+                           or self._settings.text_layout == "lines")
             direction_source = (chat_direction_source(text, self._settings.text_layout)
-                                if self._settings.chat_slang_enabled else text)
+                                if chat_active else text)
             direction = choose_direction(direction_source, self._settings.direction)
             text_layout = self._settings.text_layout
             if direction is None:
@@ -796,11 +831,21 @@ class Pipeline:
             # Preserve source/identity independently of the model. The default
             # paragraph layout must not silently disable an enabled chat policy.
             model_text, translation_policy, chat_plan = text, "", None
-            if direction == "en-zh" and self._settings.chat_slang_enabled:
+            if direction == "en-zh" and chat_active:
                 chat_plan = prepare_chat_translation(text, text_layout,
-                                                     self._settings.chat_slang_overrides)
-                model_text = chat_plan.cache_source
-                translation_policy = chat_translation_fingerprint(self._settings.chat_slang_overrides)
+                                                     self._settings.chat_slang_overrides,
+                                                     mode="fast",
+                                                     slang_enabled=self._settings.chat_slang_enabled)
+                if self._settings.chat_slang_enabled or chat_plan.uses_row_adapter:
+                    model_text = chat_plan.cache_source
+                    translation_policy = chat_translation_fingerprint(self._settings.chat_slang_overrides,
+                        mode="fast",
+                        slang_enabled=self._settings.chat_slang_enabled)
+                else:
+                    # Explicit lines can protect names with the glossary off,
+                    # but anonymous unchanged text keeps its ordinary cache
+                    # identity and the existing single model invocation.
+                    chat_plan = None
             self._inflight_stage = "translation"
         try:
             cache_key = make_cache_key(self._translator.model_id(direction), direction, text,

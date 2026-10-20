@@ -123,14 +123,24 @@ def test_two_named_messages_preserve_rows_even_in_default_layout(make_pipeline, 
     assert results[0].translation == "First:谢谢!\nSecond:没问题."
 
 
-def test_default_continuous_plain_soft_wrap_stays_one_model_batch(make_pipeline):
+def test_default_continuous_short_reply_sequence_uses_direct_composition(make_pipeline):
     pipeline, _, _, translator, results, _ = make_pipeline(
         {40: "ty!\nnp."}, text_layout="continuous")
     pipeline.start(REGION)
     wait_for(lambda: len(results) == 1)
     assert results[0].source == "ty! np."
-    assert translator.calls == [("thanks! no problem.", "en-zh")]
-    assert results[0].translation == "译：thanks! no problem."
+    assert translator.calls == []
+    assert results[0].translation == "谢谢!，没问题."
+
+
+def test_default_continuous_plain_soft_wrap_stays_one_model_batch(make_pipeline):
+    pipeline, _, _, translator, results, _ = make_pipeline(
+        {40: "ty for helping!\npls wait."}, text_layout="continuous")
+    pipeline.start(REGION)
+    wait_for(lambda: len(results) == 1)
+    assert results[0].source == "ty for helping! pls wait."
+    assert translator.calls == [("thanks for helping! please wait.", "en-zh")]
+    assert results[0].translation == "译：thanks for helping! please wait."
 
 
 @pytest.mark.parametrize("text_layout,direction,enabled,source", [

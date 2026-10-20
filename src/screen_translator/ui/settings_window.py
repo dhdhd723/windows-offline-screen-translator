@@ -145,13 +145,19 @@ class SettingsDialog(QDialog):
         chat = QWidget()
         chat_layout = QVBoxLayout(chat)
         chat_layout.setSpacing(12)
+        # Keep the research setting in persisted data/presets for compatibility,
+        # but do not expose an unaccepted model backend as an available feature.
+        self.chat_translation_hint = QLabel("本版本使用现有轻量离线模型，不需额外安装聊天模型。")
+        self.chat_translation_hint.setWordWrap(True)
+        self.chat_translation_hint.setStyleSheet("color: #64748b; font-size: 12px;")
+        chat_layout.addWidget(self.chat_translation_hint)
         self.chat_slang_enabled = QCheckBox("启用聊天缩写词表")
         self.chat_slang_enabled.setChecked(self._original.chat_slang_enabled)
         chat_layout.addWidget(self.chat_slang_enabled)
         chat_hint = QLabel("翻译方向为英文 → 中文时生效，开关默认启用。\n"
-                           "两种文字排版均生效；独立的内置缩写直接显示中文，长句先展开再翻译。\n"
+                           "两种文字排版均生效；确定的独立短回复直接显示中文，句内缩写展开后交给模型。\n"
                            "明确的昵称冒号前缀原样保留；未知词交给模型，词义仍可能不准确。\n"
-                           "rn、fr、bc、def 按聊天含义处理；MDFK、ASF 含粗俗语气，多义场景可关闭此功能。")
+                           "rn、fr、bc、def 有多种含义，游戏口语不保证每句准确；MDFK、ASF 含粗俗语气。")
         chat_hint.setWordWrap(True)
         chat_hint.setStyleSheet("color: #64748b; font-size: 12px;")
         chat_layout.addWidget(chat_hint)
